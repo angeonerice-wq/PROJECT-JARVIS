@@ -1,0 +1,42 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // SVは特定店舗に紐づかず全スタッフを横断して担当するため、店舗による絞り込みは行わない。
+    function isSv() {
+      return request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'sv';
+    }
+
+    // スタッフが作成した業務報告・チャット履歴。
+    // 本人はいつでも自分の報告を作成・閲覧できる。SVは全スタッフの報告を閲覧できるが、
+    // 書き込みは(SVであっても)本人のstaffIdでの作成のみに限定する。
+    match /reports/{reportId} {
+      allow create: if request.auth != null
+                    && request.resource.data.staffId == request.auth.uid
+                    && request.resource.data.keys().hasAll(
+                         ['staffId', 'category', 'title', 'timestamp', 'action', 'fields', 'history']
+                       )
+                    && request.resource.data.category is string
+                    && request.resource.data.title is string
+                    && request.resource.data.timestamp is timestamp;
+
+      allow read: if request.auth != null &&
+        (resource.data.staffId == request.auth.uid || isSv());
+
+      // 報告の改ざん・削除は許可しない(編集・削除UIは未実装のため)。
+      allow update, delete: if false;
+    }
+
+    // スタッフ/SVのロールを保持するプロフィール。ロールの自己書き換えを防ぐため、
+    // クライアントからの書き込みは一切許可しない(アカウント発行は管理者が行う)。
+    match /users/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
