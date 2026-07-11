@@ -91,6 +91,16 @@ class UserSession extends ChangeNotifier {
   }
 }
 
+/// サインアウトしてログイン画面に戻る(設定タブ・ドロワー共通)。
+Future<void> performLogout(BuildContext context) async {
+  await FirebaseAuth.instance.signOut();
+  if (!context.mounted) return;
+  Navigator.of(context).pushAndRemoveUntil(
+    MaterialPageRoute(builder: (_) => const LoginScreen()),
+    (route) => false,
+  );
+}
+
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -329,6 +339,7 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF0A0E1A),
+      drawer: const _AppDrawer(),
       body: SafeArea(
         child: IndexedStack(
           index: _selectedIndex,
@@ -372,6 +383,61 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
+class _AppDrawer extends StatelessWidget {
+  const _AppDrawer();
+
+  @override
+  Widget build(BuildContext context) {
+    return Drawer(
+      backgroundColor: const Color(0xFF0A0E1A),
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(20),
+              child: Row(
+                children: [
+                  const CircleAvatar(
+                    radius: 28,
+                    backgroundColor: Color(0xFF3B82F6),
+                    child: Icon(Icons.person, color: Colors.white, size: 28),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(UserSession.instance.displayName ?? '-',
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 2),
+                        Text(UserSession.instance.role?.label ?? '-',
+                            style: const TextStyle(color: Colors.grey, fontSize: 12.5)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(color: Colors.white10, height: 1),
+            ListTile(
+              leading: const Icon(Icons.logout, color: Color(0xFFEF4444)),
+              title: const Text('ログアウト', style: TextStyle(color: Color(0xFFEF4444))),
+              onTap: () {
+                Navigator.of(context).pop();
+                performLogout(context);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _HomeTabBody extends StatelessWidget {
   const _HomeTabBody();
 
@@ -386,7 +452,16 @@ class _HomeTabBody extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Icon(Icons.menu, color: Colors.white70, size: 26),
+              Builder(
+                builder: (context) => InkWell(
+                  onTap: () => Scaffold.of(context).openDrawer(),
+                  borderRadius: BorderRadius.circular(20),
+                  child: const Padding(
+                    padding: EdgeInsets.all(4),
+                    child: Icon(Icons.menu, color: Colors.white70, size: 26),
+                  ),
+                ),
+              ),
               Stack(
                 clipBehavior: Clip.none,
                     children: [
@@ -2969,7 +3044,16 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
           child: Row(
             children: [
-              const Icon(Icons.menu, color: Colors.white70, size: 26),
+              Builder(
+                builder: (context) => InkWell(
+                  onTap: () => Scaffold.of(context).openDrawer(),
+                  borderRadius: BorderRadius.circular(20),
+                  child: const Padding(
+                    padding: EdgeInsets.all(4),
+                    child: Icon(Icons.menu, color: Colors.white70, size: 26),
+                  ),
+                ),
+              ),
               const SizedBox(width: 12),
               const Text('履歴',
                   style: TextStyle(
@@ -3142,7 +3226,16 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
         children: [
           Row(
             children: [
-              const Icon(Icons.menu, color: Colors.white70, size: 26),
+              Builder(
+                builder: (context) => InkWell(
+                  onTap: () => Scaffold.of(context).openDrawer(),
+                  borderRadius: BorderRadius.circular(20),
+                  child: const Padding(
+                    padding: EdgeInsets.all(4),
+                    child: Icon(Icons.menu, color: Colors.white70, size: 26),
+                  ),
+                ),
+              ),
               const SizedBox(width: 12),
               const Text('サマリー',
                   style: TextStyle(
@@ -3425,14 +3518,7 @@ class _SettingsTabBodyState extends State<SettingsTabBody> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _handleLogout() async {
-    await FirebaseAuth.instance.signOut();
-    if (!mounted) return;
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => const LoginScreen()),
-      (route) => false,
-    );
-  }
+  Future<void> _handleLogout() => performLogout(context);
 
   @override
   Widget build(BuildContext context) {
@@ -3443,7 +3529,16 @@ class _SettingsTabBodyState extends State<SettingsTabBody> {
         children: [
           Row(
             children: [
-              const Icon(Icons.menu, color: Colors.white70, size: 26),
+              Builder(
+                builder: (context) => InkWell(
+                  onTap: () => Scaffold.of(context).openDrawer(),
+                  borderRadius: BorderRadius.circular(20),
+                  child: const Padding(
+                    padding: EdgeInsets.all(4),
+                    child: Icon(Icons.menu, color: Colors.white70, size: 26),
+                  ),
+                ),
+              ),
               const SizedBox(width: 12),
               const Text('設定',
                   style: TextStyle(
