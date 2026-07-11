@@ -3210,6 +3210,28 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
         .toList();
   }
 
+  DateTime _startOfWeek(DateTime now) {
+    final today = DateTime(now.year, now.month, now.day);
+    return today.subtract(Duration(days: today.weekday - 1));
+  }
+
+  int _weeklyCount(List<HistoryEntry> entries) {
+    final start = _startOfWeek(DateTime.now());
+    return entries.where((e) => !e.timestamp.isBefore(start)).length;
+  }
+
+  String _approveRateLabel(List<HistoryEntry> entries) {
+    if (entries.isEmpty) return '-';
+    final approveCount =
+        entries.where((e) => e.action == SuggestedAction.approveOnly).length;
+    final rate = (approveCount / entries.length * 100).round();
+    return '$rate%';
+  }
+
+  int _escalateCount(List<HistoryEntry> entries) {
+    return entries.where((e) => e.action == SuggestedAction.escalate).length;
+  }
+
   @override
   Widget build(BuildContext context) {
     final isSv = UserSession.instance.role == UserRole.sv;
@@ -3218,6 +3240,10 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
     final maxCount = breakdown.isEmpty
         ? 1
         : breakdown.map((e) => e.count).reduce((a, b) => a > b ? a : b);
+
+    final weeklyCountLabel = isSv ? '${_weeklyCount(svEntries)}件' : '35件';
+    final approveRateLabel = isSv ? _approveRateLabel(svEntries) : '74%';
+    final escalateCountLabel = isSv ? '${_escalateCount(svEntries)}件' : '4件';
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
@@ -3248,7 +3274,7 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
               Expanded(
                 child: _SummaryStatCard(
                   label: '今週の対応件数',
-                  value: '35件',
+                  value: weeklyCountLabel,
                   icon: Icons.inbox,
                   color: const Color(0xFF3B82F6),
                 ),
@@ -3257,7 +3283,7 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
               Expanded(
                 child: _SummaryStatCard(
                   label: '承認のみでOK率',
-                  value: '74%',
+                  value: approveRateLabel,
                   icon: Icons.check_circle,
                   color: const Color(0xFF22C55E),
                 ),
@@ -3270,7 +3296,7 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
               Expanded(
                 child: _SummaryStatCard(
                   label: '要エスカレーション',
-                  value: '4件',
+                  value: escalateCountLabel,
                   icon: Icons.priority_high,
                   color: const Color(0xFFEF4444),
                 ),
