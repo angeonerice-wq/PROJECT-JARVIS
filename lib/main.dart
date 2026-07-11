@@ -3425,6 +3425,15 @@ class _SettingsTabBodyState extends State<SettingsTabBody> {
     if (mounted) setState(() {});
   }
 
+  Future<void> _handleLogout() async {
+    await FirebaseAuth.instance.signOut();
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const LoginScreen()),
+      (route) => false,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return SingleChildScrollView(
@@ -3496,10 +3505,11 @@ class _SettingsTabBodyState extends State<SettingsTabBody> {
           const _SettingsNavTile(icon: Icons.description_outlined, label: '利用規約'),
           const _SettingsNavTile(icon: Icons.privacy_tip_outlined, label: 'プライバシーポリシー'),
           const SizedBox(height: 20),
-          const _SettingsNavTile(
+          _SettingsNavTile(
             icon: Icons.logout,
             label: 'ログアウト',
-            color: Color(0xFFEF4444),
+            color: const Color(0xFFEF4444),
+            onTap: _handleLogout,
           ),
         ],
       ),
@@ -3551,11 +3561,13 @@ class _SettingsNavTile extends StatelessWidget {
   final String label;
   final String? trailing;
   final Color? color;
+  final VoidCallback? onTap;
   const _SettingsNavTile({
     required this.icon,
     required this.label,
     this.trailing,
     this.color,
+    this.onTap,
   });
 
   @override
@@ -3565,7 +3577,7 @@ class _SettingsNavTile extends StatelessWidget {
       color: Colors.transparent,
       child: InkWell(
         borderRadius: BorderRadius.circular(14),
-        onTap: () {},
+        onTap: onTap,
         child: Container(
           margin: const EdgeInsets.only(bottom: 8),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
