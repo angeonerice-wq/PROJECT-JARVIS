@@ -24,8 +24,13 @@ service cloud.firestore {
       allow read: if request.auth != null &&
         (resource.data.staffId == request.auth.uid || isSv());
 
-      // 報告の改ざん・削除は許可しない(編集・削除UIは未実装のため)。
-      allow update, delete: if false;
+      // SVが承認した際に、承認時刻(approvedAt)のみ書き込める。それ以外のフィールドの
+      // 改ざんは引き続き禁止する(編集UIは未実装のため)。
+      allow update: if isSv()
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['approvedAt'])
+                    && request.resource.data.approvedAt is timestamp;
+
+      allow delete: if false;
     }
 
     // スタッフ/SVのロールを保持するプロフィール。ロールの自己書き換えを防ぐため、
