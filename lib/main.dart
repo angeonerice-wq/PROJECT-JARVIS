@@ -438,11 +438,61 @@ class _AppDrawer extends StatelessWidget {
   }
 }
 
-class _HomeTabBody extends StatelessWidget {
+bool _isToday(DateTime dt) {
+  final now = DateTime.now();
+  return dt.year == now.year && dt.month == now.month && dt.day == now.day;
+}
+
+class _HomeTabBody extends StatefulWidget {
   const _HomeTabBody();
 
   @override
+  State<_HomeTabBody> createState() => _HomeTabBodyState();
+}
+
+class _HomeTabBodyState extends State<_HomeTabBody> {
+  @override
+  void initState() {
+    super.initState();
+    UserSession.instance.addListener(_onChanged);
+    HistoryStore.instance.addListener(_onChanged);
+    SvReportStore.instance.addListener(_onChanged);
+    StaffRosterStore.instance.addListener(_onChanged);
+  }
+
+  @override
+  void dispose() {
+    UserSession.instance.removeListener(_onChanged);
+    HistoryStore.instance.removeListener(_onChanged);
+    SvReportStore.instance.removeListener(_onChanged);
+    StaffRosterStore.instance.removeListener(_onChanged);
+    super.dispose();
+  }
+
+  void _onChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final isSv = UserSession.instance.role == UserRole.sv;
+    final entries = isSv ? SvReportStore.instance.entries : HistoryStore.instance.entries;
+    final todayEntries = entries.where((e) => _isToday(e.timestamp)).toList();
+    final totalStaffCount = StaffRosterStore.instance.staffCount;
+
+    final absentCount = todayEntries
+        .where((e) => e.category == '勤怠(欠勤)' || e.category == '勤怠(遅刻)')
+        .length;
+    final activeCount = (totalStaffCount - absentCount).clamp(0, totalStaffCount);
+    final completedTaskCount =
+        todayEntries.where((e) => e.category == 'タスク完了').length;
+    final unreviewedCount = todayEntries.where((e) => e.reviewedAt == null).length;
+    final needsActionCount = todayEntries
+        .where((e) =>
+            e.reviewedAction == SuggestedAction.needsReschedule ||
+            e.reviewedAction == SuggestedAction.escalate)
+        .length;
+
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Column(
@@ -643,27 +693,27 @@ class _HomeTabBody extends StatelessWidget {
                     const Divider(color: Colors.white12, height: 24),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: const [
+                      children: [
                         StatItem(
                             icon: Icons.people,
                             color: Colors.blueAccent,
                             label: '全体稼働',
-                            value: '18/20名'),
+                            value: isSv ? '$activeCount/$totalStaffCount名' : '-'),
                         StatItem(
                             icon: Icons.check_circle,
                             color: Colors.greenAccent,
                             label: '完了タスク',
-                            value: '12件'),
+                            value: '$completedTaskCount件'),
                         StatItem(
                             icon: Icons.warning_amber,
                             color: Colors.amber,
                             label: '未確認',
-                            value: '2件'),
+                            value: '$unreviewedCount件'),
                         StatItem(
                             icon: Icons.error_outline,
                             color: Colors.redAccent,
                             label: '要対応',
-                            value: '1件'),
+                            value: '$needsActionCount件'),
                       ],
                     ),
                   ],
@@ -1090,6 +1140,9 @@ class HistoryEntry {
   final List<MapEntry<String, String>> fields;
   final List<ChatMessage> history;
   final DateTime? approvedAt;
+  final String? reviewedBy;
+  final DateTime? reviewedAt;
+  final SuggestedAction? reviewedAction;
 
   HistoryEntry({
     this.id,
@@ -1102,6 +1155,9 @@ class HistoryEntry {
     required this.fields,
     required this.history,
     this.approvedAt,
+    this.reviewedBy,
+    this.reviewedAt,
+    this.reviewedAction,
   }) : timestamp = timestamp ?? DateTime.now();
 
   IconData get icon => categoryStyle(category).icon;
@@ -1126,6 +1182,7 @@ class HistoryEntry {
   factory HistoryEntry.fromFirestore(String id, Map<String, dynamic> data) {
     final ts = data['timestamp'];
     final approvedTs = data['approvedAt'];
+    final reviewedTs = data['reviewedAt'];
     return HistoryEntry(
       id: id,
       staffId: data['staffId'] as String?,
@@ -1134,6 +1191,11 @@ class HistoryEntry {
       title: data['title'] as String? ?? '',
       timestamp: ts is Timestamp ? ts.toDate() : DateTime.now(),
       approvedAt: approvedTs is Timestamp ? approvedTs.toDate() : null,
+      reviewedBy: data['reviewedBy'] as String?,
+      reviewedAt: reviewedTs is Timestamp ? reviewedTs.toDate() : null,
+      reviewedAction: SuggestedAction.values
+          .where((a) => a.name == data['reviewedAction'])
+          .firstOrNull,
       action: SuggestedAction.values.firstWhere(
         (a) => a.name == data['action'],
         orElse: () => SuggestedAction.approveOnly,
@@ -1324,6 +1386,108 @@ class SvReportStore extends ChangeNotifier {
   void dispose() {
     UserSession.instance.removeListener(_onSessionChanged);
     _entriesSub?.cancel();
+    super.dispose();
+  }
+}
+
+/// SVが自分自身で対応(承認/再調整依頼/エスカレーション)した報告を購読するストア。
+/// 履歴タブでSVに「自分が対応した報告」を表示するために使う。
+class SvHistoryStore extends ChangeNotifier {
+  SvHistoryStore._() {
+    UserSession.instance.addListener(_onSessionChanged);
+    _onSessionChanged();
+  }
+  static final SvHistoryStore instance = SvHistoryStore._();
+
+  final _firestore = FirebaseFirestore.instance;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _entriesSub;
+  List<HistoryEntry> _entries = [];
+  bool _isSv = false;
+
+  List<HistoryEntry> get entries => List.unmodifiable(_entries);
+
+  void _onSessionChanged() {
+    final nowSv = UserSession.instance.role == UserRole.sv;
+    if (nowSv == _isSv) return;
+    _isSv = nowSv;
+    _entriesSub?.cancel();
+
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (!nowSv || uid == null) {
+      _entries = [];
+      notifyListeners();
+      return;
+    }
+
+    _entriesSub = _firestore
+        .collection('reports')
+        .where('reviewedBy', isEqualTo: uid)
+        .orderBy('reviewedAt', descending: true)
+        .snapshots()
+        .listen((snapshot) {
+      _entries = snapshot.docs
+          .map((doc) => HistoryEntry.fromFirestore(doc.id, doc.data()))
+          .toList();
+      notifyListeners();
+    }, onError: (Object e, StackTrace st) {
+      debugPrint('[SvHistoryStore] snapshot error: $e');
+    });
+  }
+
+  @override
+  void dispose() {
+    UserSession.instance.removeListener(_onSessionChanged);
+    _entriesSub?.cancel();
+    super.dispose();
+  }
+}
+
+/// SVが自分の配下(supervisorId == 自分のuid)のスタッフ人数を購読するストア。
+/// ホーム画面の「全体稼働」の分母に使う。usersコレクション全体は読めないため、
+/// 必ずsupervisorIdで絞り込んだクエリを投げる。
+class StaffRosterStore extends ChangeNotifier {
+  StaffRosterStore._() {
+    UserSession.instance.addListener(_onSessionChanged);
+    _onSessionChanged();
+  }
+  static final StaffRosterStore instance = StaffRosterStore._();
+
+  final _firestore = FirebaseFirestore.instance;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _staffSub;
+  int _staffCount = 0;
+  bool _isSv = false;
+
+  int get staffCount => _staffCount;
+
+  void _onSessionChanged() {
+    final nowSv = UserSession.instance.role == UserRole.sv;
+    if (nowSv == _isSv) return;
+    _isSv = nowSv;
+    _staffSub?.cancel();
+
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (!nowSv || uid == null) {
+      _staffCount = 0;
+      notifyListeners();
+      return;
+    }
+
+    _staffSub = _firestore
+        .collection('users')
+        .where('supervisorId', isEqualTo: uid)
+        .snapshots()
+        .listen((snapshot) {
+      _staffCount = snapshot.docs.length;
+      notifyListeners();
+    }, onError: (Object e, StackTrace st) {
+      debugPrint('[StaffRosterStore] snapshot error: $e');
+    });
+  }
+
+  @override
+  void dispose() {
+    UserSession.instance.removeListener(_onSessionChanged);
+    _staffSub?.cancel();
     super.dispose();
   }
 }
@@ -3024,12 +3188,16 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
   @override
   void initState() {
     super.initState();
+    UserSession.instance.addListener(_onStoreChanged);
     HistoryStore.instance.addListener(_onStoreChanged);
+    SvHistoryStore.instance.addListener(_onStoreChanged);
   }
 
   @override
   void dispose() {
+    UserSession.instance.removeListener(_onStoreChanged);
     HistoryStore.instance.removeListener(_onStoreChanged);
+    SvHistoryStore.instance.removeListener(_onStoreChanged);
     super.dispose();
   }
 
@@ -3039,7 +3207,8 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
 
   @override
   Widget build(BuildContext context) {
-    final entries = HistoryStore.instance.entries;
+    final isSv = UserSession.instance.role == UserRole.sv;
+    final entries = isSv ? SvHistoryStore.instance.entries : HistoryStore.instance.entries;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -3059,12 +3228,19 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
                 ),
               ),
               const SizedBox(width: 12),
-              const Text('履歴',
-                  style: TextStyle(
+              Text(isSv ? '履歴(自分が対応した報告)' : '履歴',
+                  style: const TextStyle(
                       color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
             ],
           ),
         ),
+        if (entries.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+            child: Text(
+                isSv ? 'まだ対応した報告はありません。' : 'まだ報告はありません。',
+                style: TextStyle(color: Colors.grey[500], fontSize: 12.5)),
+          ),
         Expanded(
           child: ListView.separated(
             padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
@@ -3131,21 +3307,15 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
                               Text(e.title,
                                   style: const TextStyle(
                                       color: Colors.white, fontSize: 13.5, height: 1.3)),
-                              const SizedBox(height: 8),
-                              Container(
-                                padding:
-                                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                                decoration: BoxDecoration(
-                                  color: e.actionColor.withValues(alpha: 0.15),
-                                  borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(color: e.actionColor.withValues(alpha: 0.5)),
-                                ),
-                                child: Text(e.actionLabel,
+                              if (isSv) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                    '担当: ${e.staffName ?? shortStaffId(e.staffId)}',
                                     style: TextStyle(
-                                        color: e.actionColor,
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.bold)),
-                              ),
+                                        color: Colors.grey[600], fontSize: 11)),
+                              ],
+                              const SizedBox(height: 8),
+                              _ReportStatusBadge(entry: e),
                             ],
                           ),
                         ),
@@ -3162,6 +3332,41 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
   }
 }
 
+
+/// 承認済み(approvedAt あり)なら「✓ 承認済み」、まだなら「AI提案:xxx」を表示する。
+/// AIの提案アクションと、SVが実際に承認したかどうかを見分けやすくするためのバッジ。
+class _ReportStatusBadge extends StatelessWidget {
+  final HistoryEntry entry;
+  const _ReportStatusBadge({required this.entry});
+
+  @override
+  Widget build(BuildContext context) {
+    final isApproved = entry.approvedAt != null;
+    // 承認済みは緑の塗りつぶし、AI提案(未確定)はグレーの枠線のみにして
+    // 一目で区別できるようにする(AI提案側の色をアクション色に合わせると、
+    // 提案アクションがたまたま「承認のみでOK」のときに承認済みと同じ緑になり見分けがつかない)。
+    final color = isApproved ? const Color(0xFF22C55E) : Colors.grey[500]!;
+    final icon = isApproved ? Icons.check_circle : Icons.smart_toy_outlined;
+    final label = isApproved ? '承認済み' : 'AI提案:${entry.actionLabel}';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: isApproved ? color.withValues(alpha: 0.15) : Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: isApproved ? 0.5 : 0.6)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 4),
+          Text(label,
+              style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.bold)),
+        ],
+      ),
+    );
+  }
+}
 
 class _CategoryCount {
   final String label;
@@ -3478,6 +3683,8 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
                                       '担当: ${e.staffName ?? shortStaffId(e.staffId)}',
                                       style: TextStyle(
                                           color: Colors.grey[600], fontSize: 11)),
+                                  const SizedBox(height: 8),
+                                  _ReportStatusBadge(entry: e),
                                 ],
                               ),
                             ),
@@ -3789,14 +3996,20 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
     setState(() => _decision = action);
 
     final reportId = widget.summary.id;
-    if (action == SuggestedAction.approveOnly && reportId != null) {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (reportId != null && uid != null) {
+      final update = <String, dynamic>{
+        'reviewedBy': uid,
+        'reviewedAt': FieldValue.serverTimestamp(),
+        'reviewedAction': action.name,
+      };
+      if (action == SuggestedAction.approveOnly) {
+        update['approvedAt'] = FieldValue.serverTimestamp();
+      }
       try {
-        await FirebaseFirestore.instance
-            .collection('reports')
-            .doc(reportId)
-            .update({'approvedAt': FieldValue.serverTimestamp()});
+        await FirebaseFirestore.instance.collection('reports').doc(reportId).update(update);
       } catch (e) {
-        debugPrint('[SvSummaryScreen] approvedAtの更新に失敗しました: $e');
+        debugPrint('[SvSummaryScreen] 対応状況の更新に失敗しました: $e');
       }
     }
 
@@ -3808,19 +4021,26 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
         behavior: SnackBarBehavior.floating,
       ),
     );
+
+    // スナックバーが見える程度の間を置いてから、前の画面(一覧)に自動で戻る。
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    if (!mounted) return;
+    Navigator.of(context).pop();
   }
 
   @override
   Widget build(BuildContext context) {
     final s = widget.summary;
     final effectiveAction = _decision ?? s.action;
+    final isSv = UserSession.instance.role == UserRole.sv;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0A0E1A),
       appBar: AppBar(
         backgroundColor: const Color(0xFF0A0E1A),
         elevation: 0,
-        title: const Text('SV確認画面', style: TextStyle(color: Colors.white, fontSize: 17)),
+        title: Text(isSv ? 'SV確認画面' : '報告詳細',
+            style: const TextStyle(color: Colors.white, fontSize: 17)),
         iconTheme: const IconThemeData(color: Colors.white70),
       ),
       body: SafeArea(
@@ -3990,44 +4210,47 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
           ),
         ),
       ),
-      bottomNavigationBar: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-          child: Row(
-            children: [
-              Expanded(
-                child: _SvActionButton(
-                  label: '承認する',
-                  icon: Icons.check_circle,
-                  color: const Color(0xFF22C55E),
-                  selected: effectiveAction == SuggestedAction.approveOnly,
-                  onTap: () => _decide(SuggestedAction.approveOnly, '承認しました'),
+      bottomNavigationBar: !isSv
+          ? null
+          : SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: _SvActionButton(
+                        label: '承認する',
+                        icon: Icons.check_circle,
+                        color: const Color(0xFF22C55E),
+                        selected: effectiveAction == SuggestedAction.approveOnly,
+                        onTap: () => _decide(SuggestedAction.approveOnly, '承認しました'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _SvActionButton(
+                        label: '再調整依頼',
+                        icon: Icons.sync_problem,
+                        color: const Color(0xFFF59E0B),
+                        selected: effectiveAction == SuggestedAction.needsReschedule,
+                        onTap: () =>
+                            _decide(SuggestedAction.needsReschedule, '再調整を依頼しました'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: _SvActionButton(
+                        label: 'エスカレーション',
+                        icon: Icons.priority_high,
+                        color: const Color(0xFFEF4444),
+                        selected: effectiveAction == SuggestedAction.escalate,
+                        onTap: () => _decide(SuggestedAction.escalate, 'エスカレーションしました'),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _SvActionButton(
-                  label: '再調整依頼',
-                  icon: Icons.sync_problem,
-                  color: const Color(0xFFF59E0B),
-                  selected: effectiveAction == SuggestedAction.needsReschedule,
-                  onTap: () => _decide(SuggestedAction.needsReschedule, '再調整を依頼しました'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _SvActionButton(
-                  label: 'エスカレーション',
-                  icon: Icons.priority_high,
-                  color: const Color(0xFFEF4444),
-                  selected: effectiveAction == SuggestedAction.escalate,
-                  onTap: () => _decide(SuggestedAction.escalate, 'エスカレーションしました'),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+            ),
     );
   }
 }
