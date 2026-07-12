@@ -8,6 +8,19 @@ service cloud.firestore {
         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'sv';
     }
 
+    // SVによる報告への対応(承認/再調整依頼/エスカレーション)の書き込みを検証する。
+    // 変更してよいのは reviewedBy/reviewedAt/reviewedAction と、承認時のみ付随する
+    // approvedAt だけで、それ以外のフィールドの値が1つでも変わっていれば拒否する。
+    function isValidReview() {
+      let affected = request.resource.data.diff(resource.data).affectedKeys();
+      return affected.hasOnly(['approvedAt', 'reviewedBy', 'reviewedAt', 'reviewedAction'])
+        && request.resource.data.reviewedBy == request.auth.uid
+        && request.resource.data.reviewedAt is timestamp
+        && request.resource.data.reviewedAction is string
+        && (!('approvedAt' in request.resource.data)
+            || request.resource.data.approvedAt is timestamp);
+    }
+
     // スタッフが作成した業務報告・チャット履歴。
     // 本人はいつでも自分の報告を作成・閲覧できる。SVは全スタッフの報告を閲覧できるが、
     // 書き込みは(SVであっても)本人のstaffIdでの作成のみに限定する。
@@ -24,19 +37,19 @@ service cloud.firestore {
       allow read: if request.auth != null &&
         (resource.data.staffId == request.auth.uid || isSv());
 
-      // SVが承認した際に、承認時刻(approvedAt)のみ書き込める。それ以外のフィールドの
-      // 改ざんは引き続き禁止する(編集UIは未実装のため)。
-      allow update: if isSv()
-                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['approvedAt'])
-                    && request.resource.data.approvedAt is timestamp;
+      allow update: if isSv() && isValidReview();
 
       allow delete: if false;
     }
 
     // スタッフ/SVのロールを保持するプロフィール。ロールの自己書き換えを防ぐため、
     // クライアントからの書き込みは一切許可しない(アカウント発行は管理者が行う)。
+    // SVは、自分がsupervisorId(担当SV)として設定されているスタッフのプロフィールのみ
+    // 閲覧できる(usersコレクション全体への読み取り権限は与えない)。
     match /users/{uid} {
-      allow read: if request.auth != null && request.auth.uid == uid;
+      allow read: if request.auth != null &&
+        (request.auth.uid == uid ||
+         (isSv() && resource.data.supervisorId == request.auth.uid));
       allow write: if false;
     }
 
