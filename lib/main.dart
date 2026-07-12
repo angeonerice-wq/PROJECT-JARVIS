@@ -1089,6 +1089,7 @@ class HistoryEntry {
   final SuggestedAction action;
   final List<MapEntry<String, String>> fields;
   final List<ChatMessage> history;
+  final DateTime? approvedAt;
 
   HistoryEntry({
     this.id,
@@ -1100,6 +1101,7 @@ class HistoryEntry {
     required this.action,
     required this.fields,
     required this.history,
+    this.approvedAt,
   }) : timestamp = timestamp ?? DateTime.now();
 
   IconData get icon => categoryStyle(category).icon;
@@ -1123,6 +1125,7 @@ class HistoryEntry {
 
   factory HistoryEntry.fromFirestore(String id, Map<String, dynamic> data) {
     final ts = data['timestamp'];
+    final approvedTs = data['approvedAt'];
     return HistoryEntry(
       id: id,
       staffId: data['staffId'] as String?,
@@ -1130,6 +1133,7 @@ class HistoryEntry {
       category: data['category'] as String? ?? '',
       title: data['title'] as String? ?? '',
       timestamp: ts is Timestamp ? ts.toDate() : DateTime.now(),
+      approvedAt: approvedTs is Timestamp ? approvedTs.toDate() : null,
       action: SuggestedAction.values.firstWhere(
         (a) => a.name == data['action'],
         orElse: () => SuggestedAction.approveOnly,
@@ -3078,6 +3082,7 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
                       MaterialPageRoute(
                         builder: (_) => SvSummaryScreen(
                           summary: SvReportSummary(
+                            id: e.id,
                             category: e.category,
                             icon: e.icon,
                             color: e.color,
@@ -3232,6 +3237,19 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
     return entries.where((e) => e.action == SuggestedAction.escalate).length;
   }
 
+  /// 承認済み全件の(approvedAt - timestamp)の平均。承認済みが1件もなければ「-」。
+  String _avgResponseTimeLabel(List<HistoryEntry> entries) {
+    final approved = entries.where((e) => e.approvedAt != null).toList();
+    if (approved.isEmpty) return '-';
+    final totalSeconds = approved.fold<int>(
+      0,
+      (acc, e) => acc + e.approvedAt!.difference(e.timestamp).inSeconds,
+    );
+    final avgMinutes = (totalSeconds / approved.length / 60).round();
+    if (avgMinutes < 60) return '$avgMinutes分';
+    return '${avgMinutes ~/ 60}時間${avgMinutes % 60}分';
+  }
+
   @override
   Widget build(BuildContext context) {
     final isSv = UserSession.instance.role == UserRole.sv;
@@ -3244,6 +3262,7 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
     final weeklyCountLabel = isSv ? '${_weeklyCount(svEntries)}件' : '35件';
     final approveRateLabel = isSv ? _approveRateLabel(svEntries) : '74%';
     final escalateCountLabel = isSv ? '${_escalateCount(svEntries)}件' : '4件';
+    final avgResponseTimeLabel = isSv ? _avgResponseTimeLabel(svEntries) : '3分';
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
@@ -3305,7 +3324,7 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
               Expanded(
                 child: _SummaryStatCard(
                   label: '平均対応時間',
-                  value: '3分',
+                  value: avgResponseTimeLabel,
                   icon: Icons.timer,
                   color: const Color(0xFF06B6D4),
                 ),
@@ -3403,6 +3422,7 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
                           MaterialPageRoute(
                             builder: (_) => SvSummaryScreen(
                               summary: SvReportSummary(
+                                id: e.id,
                                 category: e.category,
                                 icon: e.icon,
                                 color: e.color,
@@ -3732,6 +3752,7 @@ class _SettingsNavTile extends StatelessWidget {
 
 
 class SvReportSummary {
+  final String? id;
   final String category;
   final IconData icon;
   final Color color;
@@ -3741,6 +3762,7 @@ class SvReportSummary {
   final List<ChatMessage> history;
 
   const SvReportSummary({
+    this.id,
     required this.category,
     required this.icon,
     required this.color,
@@ -3763,8 +3785,22 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
   bool _showHistory = false;
   SuggestedAction? _decision;
 
-  void _decide(SuggestedAction action, String message) {
+  Future<void> _decide(SuggestedAction action, String message) async {
     setState(() => _decision = action);
+
+    final reportId = widget.summary.id;
+    if (action == SuggestedAction.approveOnly && reportId != null) {
+      try {
+        await FirebaseFirestore.instance
+            .collection('reports')
+            .doc(reportId)
+            .update({'approvedAt': FieldValue.serverTimestamp()});
+      } catch (e) {
+        debugPrint('[SvSummaryScreen] approvedAtの更新に失敗しました: $e');
+      }
+    }
+
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
