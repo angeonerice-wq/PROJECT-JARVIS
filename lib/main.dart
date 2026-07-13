@@ -168,6 +168,18 @@ class _LoginScreenState extends State<LoginScreen> {
           _ => 'ログインに失敗しました。(${e.code})',
         };
       });
+    } catch (e) {
+      // ログイン自体は成功したがロール確認(Firestore読み取り)などで失敗した場合を含む、
+      // FirebaseAuthException以外の予期しないエラー(通信断など)。中途半端な状態を避けるため
+      // 念のためサインアウトしておく。
+      try {
+        await FirebaseAuth.instance.signOut();
+      } catch (_) {
+        // サインアウト自体の失敗は無視(すでにサインインしていない可能性もあるため)。
+      }
+      if (!mounted) return;
+      setState(() =>
+          _errorMessage = '通信エラーが発生しました。通信状況をご確認のうえ、もう一度お試しください。');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -1536,6 +1548,50 @@ class ChatInputBar extends StatelessWidget {
   }
 }
 
+/// 会話完了後の送信状態を表示する共通ウィジェット。
+/// 送信中はスピナー、失敗時は再送信ボタンを表示する(成功時は何も表示しない=非表示)。
+class _SubmitStatusBar extends StatelessWidget {
+  final bool isSaving;
+  final VoidCallback onRetry;
+  const _SubmitStatusBar({required this.isSaving, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    if (isSaving) {
+      return const Padding(
+        padding: EdgeInsets.fromLTRB(16, 4, 16, 16),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
+            ),
+            SizedBox(width: 10),
+            Text('送信中...', style: TextStyle(color: Colors.white70, fontSize: 13)),
+          ],
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+      child: SizedBox(
+        width: double.infinity,
+        child: OutlinedButton.icon(
+          onPressed: onRetry,
+          icon: const Icon(Icons.refresh, size: 18),
+          label: const Text('再送信する'),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: Colors.white,
+            side: const BorderSide(color: Colors.white24),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 // ============================================================
 // 履歴タブ
 // ============================================================
@@ -1577,6 +1633,9 @@ class _AttendanceChatScreenState extends State<AttendanceChatScreen> {
   final _AttendanceReport _report = _AttendanceReport();
 
   bool _isComplete = false;
+  bool _isSaving = false;
+  bool _saveFailed = false;
+  HistoryEntry? _pendingEntry;
 
   @override
   void initState() {
@@ -1736,14 +1795,32 @@ class _AttendanceChatScreenState extends State<AttendanceChatScreen> {
       history: List.unmodifiable(_messages),
     );
 
+    await _submitEntry(entry);
+  }
+
+  Future<void> _submitEntry(HistoryEntry entry) async {
+    setState(() {
+      _isSaving = true;
+      _saveFailed = false;
+    });
     try {
       await HistoryStore.instance.add(entry);
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+        _pendingEntry = null;
+      });
       _addJarvisMessage('ありがとうございます。内容を確認し、SVに共有しました。');
     } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+        _saveFailed = true;
+        _pendingEntry = entry;
+      });
       _addJarvisMessage('申し訳ありません、保存に失敗しました。通信状況をご確認のうえ、もう一度お試しください。');
     }
   }
-
 
   SuggestedAction _decideSuggestedAction(int monthlyCount) {
     final reason = _report.reason ?? '';
@@ -1930,6 +2007,13 @@ class _AttendanceChatScreenState extends State<AttendanceChatScreen> {
                     ),
                   ],
                 ),
+              )
+            else if (_isSaving || _saveFailed)
+              _SubmitStatusBar(
+                isSaving: _isSaving,
+                onRetry: () {
+                  if (_pendingEntry != null) _submitEntry(_pendingEntry!);
+                },
               ),
           ],
         ),
@@ -1974,6 +2058,9 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
   bool _lastAskedStoreName = false;
   bool _lastAskedContent = false;
   bool _lastAskedIssueDetail = false;
+  bool _isSaving = false;
+  bool _saveFailed = false;
+  HistoryEntry? _pendingEntry;
 
   @override
   void initState() {
@@ -2119,10 +2206,29 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
       history: List.unmodifiable(_messages),
     );
 
+    await _submitEntry(entry);
+  }
+
+  Future<void> _submitEntry(HistoryEntry entry) async {
+    setState(() {
+      _isSaving = true;
+      _saveFailed = false;
+    });
     try {
       await HistoryStore.instance.add(entry);
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+        _pendingEntry = null;
+      });
       _addJarvis('ありがとうございます。内容を確認し、SVに共有しました。');
     } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+        _saveFailed = true;
+        _pendingEntry = entry;
+      });
       _addJarvis('申し訳ありません、保存に失敗しました。通信状況をご確認のうえ、もう一度お試しください。');
     }
   }
@@ -2215,7 +2321,14 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
                 ),
               )
             else if (!_isComplete)
-              ChatInputBar(controller: _controller, onSend: _handleSend),
+              ChatInputBar(controller: _controller, onSend: _handleSend)
+            else if (_isSaving || _saveFailed)
+              _SubmitStatusBar(
+                isSaving: _isSaving,
+                onRetry: () {
+                  if (_pendingEntry != null) _submitEntry(_pendingEntry!);
+                },
+              ),
           ],
         ),
       ),
@@ -2252,6 +2365,9 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
   bool _awaitingUrgencyChoice = false;
   bool _awaitingTopicChoice = false;
   bool _lastAskedContent = false;
+  bool _isSaving = false;
+  bool _saveFailed = false;
+  HistoryEntry? _pendingEntry;
 
   @override
   void initState() {
@@ -2370,10 +2486,29 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
       history: List.unmodifiable(_messages),
     );
 
+    await _submitEntry(entry);
+  }
+
+  Future<void> _submitEntry(HistoryEntry entry) async {
+    setState(() {
+      _isSaving = true;
+      _saveFailed = false;
+    });
     try {
       await HistoryStore.instance.add(entry);
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+        _pendingEntry = null;
+      });
       _addJarvis('ありがとうございます。内容を確認し、SVに共有しました。');
     } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+        _saveFailed = true;
+        _pendingEntry = entry;
+      });
       _addJarvis('申し訳ありません、保存に失敗しました。通信状況をご確認のうえ、もう一度お試しください。');
     }
   }
@@ -2477,7 +2612,14 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
                 ),
               )
             else if (!_isComplete)
-              ChatInputBar(controller: _controller, onSend: _handleSend),
+              ChatInputBar(controller: _controller, onSend: _handleSend)
+            else if (_isSaving || _saveFailed)
+              _SubmitStatusBar(
+                isSaving: _isSaving,
+                onRetry: () {
+                  if (_pendingEntry != null) _submitEntry(_pendingEntry!);
+                },
+              ),
           ],
         ),
       ),
@@ -2528,6 +2670,9 @@ class _TaskCompletionChatScreenState extends State<TaskCompletionChatScreen> {
   bool _lastAskedTaskName = false;
   bool _lastAskedVerification = false;
   bool _lastAskedExpenseAmount = false;
+  bool _isSaving = false;
+  bool _saveFailed = false;
+  HistoryEntry? _pendingEntry;
 
   @override
   void initState() {
@@ -2678,10 +2823,29 @@ class _TaskCompletionChatScreenState extends State<TaskCompletionChatScreen> {
       history: List.unmodifiable(_messages),
     );
 
+    await _submitEntry(entry);
+  }
+
+  Future<void> _submitEntry(HistoryEntry entry) async {
+    setState(() {
+      _isSaving = true;
+      _saveFailed = false;
+    });
     try {
       await HistoryStore.instance.add(entry);
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+        _pendingEntry = null;
+      });
       _addJarvis('ありがとうございます。内容を確認し、SVに共有しました。');
     } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+        _saveFailed = true;
+        _pendingEntry = entry;
+      });
       _addJarvis('申し訳ありません、保存に失敗しました。通信状況をご確認のうえ、もう一度お試しください。');
     }
   }
@@ -2795,7 +2959,14 @@ class _TaskCompletionChatScreenState extends State<TaskCompletionChatScreen> {
                 ),
               )
             else if (!_isComplete)
-              ChatInputBar(controller: _controller, onSend: _handleSend),
+              ChatInputBar(controller: _controller, onSend: _handleSend)
+            else if (_isSaving || _saveFailed)
+              _SubmitStatusBar(
+                isSaving: _isSaving,
+                onRetry: () {
+                  if (_pendingEntry != null) _submitEntry(_pendingEntry!);
+                },
+              ),
           ],
         ),
       ),
@@ -2829,6 +3000,9 @@ class _OtherChatScreenState extends State<OtherChatScreen> {
   bool _isComplete = false;
   bool _awaitingUrgencyChoice = false;
   bool _lastAskedContent = false;
+  bool _isSaving = false;
+  bool _saveFailed = false;
+  HistoryEntry? _pendingEntry;
 
   @override
   void initState() {
@@ -2933,10 +3107,29 @@ class _OtherChatScreenState extends State<OtherChatScreen> {
       history: List.unmodifiable(_messages),
     );
 
+    await _submitEntry(entry);
+  }
+
+  Future<void> _submitEntry(HistoryEntry entry) async {
+    setState(() {
+      _isSaving = true;
+      _saveFailed = false;
+    });
     try {
       await HistoryStore.instance.add(entry);
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+        _pendingEntry = null;
+      });
       _addJarvis('ありがとうございます。内容を確認し、SVに共有しました。');
     } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+        _saveFailed = true;
+        _pendingEntry = entry;
+      });
       _addJarvis('申し訳ありません、保存に失敗しました。通信状況をご確認のうえ、もう一度お試しください。');
     }
   }
@@ -2998,7 +3191,14 @@ class _OtherChatScreenState extends State<OtherChatScreen> {
                 ),
               )
             else if (!_isComplete)
-              ChatInputBar(controller: _controller, onSend: _handleSend),
+              ChatInputBar(controller: _controller, onSend: _handleSend)
+            else if (_isSaving || _saveFailed)
+              _SubmitStatusBar(
+                isSaving: _isSaving,
+                onRetry: () {
+                  if (_pendingEntry != null) _submitEntry(_pendingEntry!);
+                },
+              ),
           ],
         ),
       ),
@@ -3023,6 +3223,10 @@ class _AnnouncementChatScreenState extends State<AnnouncementChatScreen> {
   bool _awaitingConfirmChoice = false;
   bool _awaitingQuestionInput = false;
   String? _questionText;
+  bool _isSaving = false;
+  bool _saveFailed = false;
+  HistoryEntry? _pendingEntry;
+  bool _pendingHadQuestion = false;
 
   static const String _noticeText =
       '【本日の重要なお知らせ】\n'
@@ -3103,12 +3307,32 @@ class _AnnouncementChatScreenState extends State<AnnouncementChatScreen> {
       history: List.unmodifiable(_messages),
     );
 
+    await _submitEntry(entry, hadQuestion: hadQuestion);
+  }
+
+  Future<void> _submitEntry(HistoryEntry entry, {required bool hadQuestion}) async {
+    setState(() {
+      _isSaving = true;
+      _saveFailed = false;
+      _pendingHadQuestion = hadQuestion;
+    });
     try {
       await HistoryStore.instance.add(entry);
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+        _pendingEntry = null;
+      });
       _addJarvis(hadQuestion
           ? 'ありがとうございます。ご質問をSVに共有しました。'
           : 'ご確認ありがとうございます。SVに確認済みとして共有しました。');
     } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+        _saveFailed = true;
+        _pendingEntry = entry;
+      });
       _addJarvis('申し訳ありません、保存に失敗しました。通信状況をご確認のうえ、もう一度お試しください。');
     }
   }
@@ -3167,7 +3391,16 @@ class _AnnouncementChatScreenState extends State<AnnouncementChatScreen> {
                 ),
               )
             else if (_awaitingQuestionInput)
-              ChatInputBar(controller: _controller, onSend: _handleSend),
+              ChatInputBar(controller: _controller, onSend: _handleSend)
+            else if (_isSaving || _saveFailed)
+              _SubmitStatusBar(
+                isSaving: _isSaving,
+                onRetry: () {
+                  if (_pendingEntry != null) {
+                    _submitEntry(_pendingEntry!, hadQuestion: _pendingHadQuestion);
+                  }
+                },
+              ),
           ],
         ),
       ),
@@ -3991,12 +4224,16 @@ class SvSummaryScreen extends StatefulWidget {
 class _SvSummaryScreenState extends State<SvSummaryScreen> {
   bool _showHistory = false;
   SuggestedAction? _decision;
+  bool _isSubmitting = false;
 
   Future<void> _decide(SuggestedAction action, String message) async {
-    setState(() => _decision = action);
+    if (_isSubmitting) return; // 二重送信防止
+    setState(() => _isSubmitting = true);
 
     final reportId = widget.summary.id;
     final uid = FirebaseAuth.instance.currentUser?.uid;
+    var success = false;
+
     if (reportId != null && uid != null) {
       final update = <String, dynamic>{
         'reviewedBy': uid,
@@ -4008,12 +4245,28 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
       }
       try {
         await FirebaseFirestore.instance.collection('reports').doc(reportId).update(update);
+        success = true;
       } catch (e) {
         debugPrint('[SvSummaryScreen] 対応状況の更新に失敗しました: $e');
       }
     }
 
     if (!mounted) return;
+
+    if (!success) {
+      // 失敗時は選択状態を反映せず、再度ボタンを押し直せるようにする。
+      setState(() => _isSubmitting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('保存に失敗しました。通信状況をご確認のうえ、もう一度お試しください。'),
+          backgroundColor: Color(0xFF7F1D1D),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _decision = action);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
@@ -4223,7 +4476,9 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
                         icon: Icons.check_circle,
                         color: const Color(0xFF22C55E),
                         selected: effectiveAction == SuggestedAction.approveOnly,
-                        onTap: () => _decide(SuggestedAction.approveOnly, '承認しました'),
+                        onTap: _isSubmitting
+                            ? null
+                            : () => _decide(SuggestedAction.approveOnly, '承認しました'),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -4233,8 +4488,9 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
                         icon: Icons.sync_problem,
                         color: const Color(0xFFF59E0B),
                         selected: effectiveAction == SuggestedAction.needsReschedule,
-                        onTap: () =>
-                            _decide(SuggestedAction.needsReschedule, '再調整を依頼しました'),
+                        onTap: _isSubmitting
+                            ? null
+                            : () => _decide(SuggestedAction.needsReschedule, '再調整を依頼しました'),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -4244,7 +4500,9 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
                         icon: Icons.priority_high,
                         color: const Color(0xFFEF4444),
                         selected: effectiveAction == SuggestedAction.escalate,
-                        onTap: () => _decide(SuggestedAction.escalate, 'エスカレーションしました'),
+                        onTap: _isSubmitting
+                            ? null
+                            : () => _decide(SuggestedAction.escalate, 'エスカレーションしました'),
                       ),
                     ),
                   ],
@@ -4260,7 +4518,7 @@ class _SvActionButton extends StatelessWidget {
   final IconData icon;
   final Color color;
   final bool selected;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   const _SvActionButton({
     required this.label,
     required this.icon,
@@ -4271,13 +4529,16 @@ class _SvActionButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final disabled = onTap == null;
     return Material(
       color: Colors.transparent,
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
         onTap: onTap,
-        child: Container(
+        child: Opacity(
+          opacity: disabled ? 0.4 : 1,
+          child: Container(
           padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 6),
           decoration: BoxDecoration(
             color: selected ? color.withValues(alpha: 0.25) : color.withValues(alpha: 0.1),
@@ -4295,6 +4556,7 @@ class _SvActionButton extends StatelessWidget {
                 style: TextStyle(color: color, fontSize: 11.5, fontWeight: FontWeight.bold),
               ),
             ],
+          ),
           ),
         ),
       ),
