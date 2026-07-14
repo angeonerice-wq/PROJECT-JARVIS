@@ -346,6 +346,15 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   int _selectedIndex = 2; // 初期表示はJARVISタブ(ホームと同じ内容)
+  SummaryReportTab? _summaryInitialTab;
+
+  /// ホーム画面の「未確認」「要対応」カードから、サマリータブの該当タブを選択した状態で開く。
+  void _openSummaryTab(SummaryReportTab tab) {
+    setState(() {
+      _summaryInitialTab = tab;
+      _selectedIndex = 3;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -355,12 +364,12 @@ class _HomePageState extends State<HomePage> {
       body: SafeArea(
         child: IndexedStack(
           index: _selectedIndex,
-          children: const [
-            _HomeTabBody(),
-            HistoryTabBody(),
-            _HomeTabBody(),
-            SummaryTabBody(),
-            SettingsTabBody(),
+          children: [
+            _HomeTabBody(onOpenSummaryTab: _openSummaryTab),
+            const HistoryTabBody(),
+            _HomeTabBody(onOpenSummaryTab: _openSummaryTab),
+            SummaryTabBody(initialTab: _summaryInitialTab),
+            const SettingsTabBody(),
           ],
         ),
       ),
@@ -456,7 +465,9 @@ bool _isToday(DateTime dt) {
 }
 
 class _HomeTabBody extends StatefulWidget {
-  const _HomeTabBody();
+  final void Function(SummaryReportTab tab)? onOpenSummaryTab;
+
+  const _HomeTabBody({this.onOpenSummaryTab});
 
   @override
   State<_HomeTabBody> createState() => _HomeTabBodyState();
@@ -710,22 +721,42 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
                             icon: Icons.people,
                             color: Colors.blueAccent,
                             label: '全体稼働',
-                            value: isSv ? '$activeCount/$totalStaffCount名' : '-'),
+                            value: isSv ? '$activeCount/$totalStaffCount名' : '-',
+                            onTap: isSv
+                                ? () => Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                          builder: (_) => const AttendanceOverviewScreen()),
+                                    )
+                                : null),
                         StatItem(
                             icon: Icons.check_circle,
                             color: Colors.greenAccent,
                             label: '完了タスク',
-                            value: '$completedTaskCount件'),
+                            value: '$completedTaskCount件',
+                            onTap: isSv
+                                ? () => Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                          builder: (_) => const CompletedTasksScreen()),
+                                    )
+                                : null),
                         StatItem(
                             icon: Icons.warning_amber,
                             color: Colors.amber,
                             label: '未確認',
-                            value: '$unreviewedCount件'),
+                            value: '$unreviewedCount件',
+                            onTap: isSv
+                                ? () => widget.onOpenSummaryTab
+                                    ?.call(SummaryReportTab.unreviewed)
+                                : null),
                         StatItem(
                             icon: Icons.error_outline,
                             color: Colors.redAccent,
                             label: '要対応',
-                            value: '$needsActionCount件'),
+                            value: '$needsActionCount件',
+                            onTap: isSv
+                                ? () => widget.onOpenSummaryTab
+                                    ?.call(SummaryReportTab.needsAction)
+                                : null),
                       ],
                     ),
                   ],
@@ -824,6 +855,7 @@ class StatItem extends StatelessWidget {
   final Color color;
   final String label;
   final String value;
+  final VoidCallback? onTap;
 
   const StatItem({
     super.key,
@@ -831,11 +863,12 @@ class StatItem extends StatelessWidget {
     required this.color,
     required this.label,
     required this.value,
+    this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Column(
+    final content = Column(
       children: [
         Icon(icon, color: color, size: 20),
         const SizedBox(height: 6),
@@ -847,6 +880,19 @@ class StatItem extends StatelessWidget {
                 fontSize: 15,
                 fontWeight: FontWeight.bold)),
       ],
+    );
+    if (onTap == null) return content;
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+          child: content,
+        ),
+      ),
     );
   }
 }
@@ -1457,6 +1503,13 @@ class SvHistoryStore extends ChangeNotifier {
 /// SVが自分の配下(supervisorId == 自分のuid)のスタッフ人数を購読するストア。
 /// ホーム画面の「全体稼働」の分母に使う。usersコレクション全体は読めないため、
 /// 必ずsupervisorIdで絞り込んだクエリを投げる。
+/// 配下スタッフのuid・表示名(勤怠一覧などで「誰が」を表示するために使用)。
+class StaffProfile {
+  final String uid;
+  final String? displayName;
+  const StaffProfile({required this.uid, this.displayName});
+}
+
 class StaffRosterStore extends ChangeNotifier {
   StaffRosterStore._() {
     UserSession.instance.addListener(_onSessionChanged);
@@ -1466,10 +1519,11 @@ class StaffRosterStore extends ChangeNotifier {
 
   final _firestore = FirebaseFirestore.instance;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _staffSub;
-  int _staffCount = 0;
+  List<StaffProfile> _staff = [];
   bool _isSv = false;
 
-  int get staffCount => _staffCount;
+  List<StaffProfile> get staff => List.unmodifiable(_staff);
+  int get staffCount => _staff.length;
 
   void _onSessionChanged() {
     final nowSv = UserSession.instance.role == UserRole.sv;
@@ -1479,7 +1533,7 @@ class StaffRosterStore extends ChangeNotifier {
 
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (!nowSv || uid == null) {
-      _staffCount = 0;
+      _staff = [];
       notifyListeners();
       return;
     }
@@ -1489,7 +1543,12 @@ class StaffRosterStore extends ChangeNotifier {
         .where('supervisorId', isEqualTo: uid)
         .snapshots()
         .listen((snapshot) {
-      _staffCount = snapshot.docs.length;
+      _staff = snapshot.docs
+          .map((doc) => StaffProfile(
+                uid: doc.id,
+                displayName: doc.data()['displayName'] as String?,
+              ))
+          .toList();
       notifyListeners();
     }, onError: (Object e, StackTrace st) {
       debugPrint('[StaffRosterStore] snapshot error: $e');
@@ -3575,18 +3634,35 @@ class _ReportStatusBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isApproved = entry.approvedAt != null;
-    // 承認済みは緑の塗りつぶし、AI提案(未確定)はグレーの枠線のみにして
-    // 一目で区別できるようにする(AI提案側の色をアクション色に合わせると、
-    // 提案アクションがたまたま「承認のみでOK」のときに承認済みと同じ緑になり見分けがつかない)。
-    final color = isApproved ? const Color(0xFF22C55E) : Colors.grey[500]!;
-    final icon = isApproved ? Icons.check_circle : Icons.smart_toy_outlined;
-    final label = isApproved ? '承認済み' : 'AI提案:${entry.actionLabel}';
+    // 再調整依頼・エスカレーション済み(reviewedAtあり・approvedAtなし)は「要対応」として
+    // 未対応(AI提案)と区別する。SVが既に対応方針を選んでいるのに「AI提案」表示のままだと
+    // 未対応と見分けがつかなくなるため。
+    final needsAction = !isApproved &&
+        (entry.reviewedAction == SuggestedAction.needsReschedule ||
+            entry.reviewedAction == SuggestedAction.escalate);
+    final Color color;
+    final IconData icon;
+    final String label;
+    if (isApproved) {
+      color = const Color(0xFF22C55E);
+      icon = Icons.check_circle;
+      label = '承認済み';
+    } else if (needsAction) {
+      color = entry.reviewedAction!.color;
+      icon = Icons.error_outline;
+      label = '要対応:${entry.reviewedAction!.label}';
+    } else {
+      color = Colors.grey[500]!;
+      icon = Icons.smart_toy_outlined;
+      label = 'AI提案:${entry.actionLabel}';
+    }
+    final filled = isApproved || needsAction;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
-        color: isApproved ? color.withValues(alpha: 0.15) : Colors.transparent,
+        color: filled ? color.withValues(alpha: 0.15) : Colors.transparent,
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withValues(alpha: isApproved ? 0.5 : 0.6)),
+        border: Border.all(color: color.withValues(alpha: filled ? 0.5 : 0.6)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -3608,14 +3684,35 @@ class _CategoryCount {
   const _CategoryCount(this.label, this.count, this.color);
 }
 
+/// SVサマリー画面「全スタッフの報告一覧」の絞り込みタブ。
+enum SummaryReportTab { unreviewed, needsAction, all }
+
+extension SummaryReportTabX on SummaryReportTab {
+  String get label {
+    switch (this) {
+      case SummaryReportTab.unreviewed:
+        return '未確認';
+      case SummaryReportTab.needsAction:
+        return '要対応';
+      case SummaryReportTab.all:
+        return '全件';
+    }
+  }
+}
+
 class SummaryTabBody extends StatefulWidget {
-  const SummaryTabBody({super.key});
+  /// ホーム画面の統計カードから遷移した際に、開いた時点で選択しておくタブ。
+  /// nullの場合は前回選択(初期値は全件)を維持する。
+  final SummaryReportTab? initialTab;
+
+  const SummaryTabBody({super.key, this.initialTab});
 
   @override
   State<SummaryTabBody> createState() => _SummaryTabBodyState();
 }
 
 class _SummaryTabBodyState extends State<SummaryTabBody> {
+  late SummaryReportTab _selectedTab = widget.initialTab ?? SummaryReportTab.all;
   static const List<_CategoryCount> _dummyBreakdown = [
     _CategoryCount('勤怠', 5, Color(0xFF3B82F6)),
     _CategoryCount('業務報告', 12, Color(0xFF22C55E)),
@@ -3639,8 +3736,32 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
     super.dispose();
   }
 
+  @override
+  void didUpdateWidget(covariant SummaryTabBody oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // ホーム画面の統計カードから再度遷移してきた場合、指定されたタブに切り替える。
+    if (widget.initialTab != null && widget.initialTab != oldWidget.initialTab) {
+      setState(() => _selectedTab = widget.initialTab!);
+    }
+  }
+
   void _onChanged() {
     if (mounted) setState(() {});
+  }
+
+  List<HistoryEntry> _filterByTab(List<HistoryEntry> entries, SummaryReportTab tab) {
+    switch (tab) {
+      case SummaryReportTab.unreviewed:
+        return entries.where((e) => e.reviewedAt == null).toList();
+      case SummaryReportTab.needsAction:
+        return entries
+            .where((e) =>
+                e.reviewedAction == SuggestedAction.needsReschedule ||
+                e.reviewedAction == SuggestedAction.escalate)
+            .toList();
+      case SummaryReportTab.all:
+        return entries;
+    }
   }
 
   List<_CategoryCount> _realBreakdown(List<HistoryEntry> entries) {
@@ -3840,14 +3961,35 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
             const Text('全スタッフの報告一覧',
                 style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
             const SizedBox(height: 12),
-            if (svEntries.isEmpty)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                child: Text('報告はまだありません。',
-                    style: TextStyle(color: Colors.grey[500], fontSize: 12.5)),
-              )
-            else
-              for (final e in svEntries) ...[
+            Row(
+              children: [
+                for (final tab in SummaryReportTab.values) ...[
+                  if (tab != SummaryReportTab.values.first) const SizedBox(width: 8),
+                  Expanded(
+                    child: _SummaryTabChip(
+                      label: tab.label,
+                      selected: tab == _selectedTab,
+                      onTap: () => setState(() => _selectedTab = tab),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 12),
+            Builder(builder: (context) {
+              final filteredEntries = _filterByTab(svEntries, _selectedTab);
+              if (filteredEntries.isEmpty) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: Text(
+                      svEntries.isEmpty ? '報告はまだありません。' : '該当する報告はありません。',
+                      style: TextStyle(color: Colors.grey[500], fontSize: 12.5)),
+                );
+              }
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (final e in filteredEntries) ...[
                 Padding(
                   padding: const EdgeInsets.only(bottom: 10),
                   child: Material(
@@ -3928,8 +4070,51 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
                   ),
                 ),
               ],
+                ],
+              );
+            }),
           ],
         ],
+      ),
+    );
+  }
+}
+
+class _SummaryTabChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _SummaryTabChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected ? Colors.cyanAccent.withValues(alpha: 0.15) : const Color(0xFF141826),
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: selected ? Colors.cyanAccent : Colors.white10),
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? Colors.cyanAccent : Colors.grey[400],
+              fontSize: 12.5,
+              fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -3967,6 +4152,383 @@ class _SummaryStatCard extends StatelessWidget {
           const SizedBox(height: 2),
           Text(label, style: TextStyle(color: Colors.grey[400], fontSize: 11.5)),
         ],
+      ),
+    );
+  }
+}
+
+// ============================================================
+// 本日の勤怠一覧・本日の完了一覧(ホーム画面の統計カードから遷移)
+// ============================================================
+
+class AttendanceOverviewScreen extends StatefulWidget {
+  const AttendanceOverviewScreen({super.key});
+
+  @override
+  State<AttendanceOverviewScreen> createState() => _AttendanceOverviewScreenState();
+}
+
+class _AttendanceOverviewScreenState extends State<AttendanceOverviewScreen> {
+  @override
+  void initState() {
+    super.initState();
+    SvReportStore.instance.addListener(_onChanged);
+    StaffRosterStore.instance.addListener(_onChanged);
+  }
+
+  @override
+  void dispose() {
+    SvReportStore.instance.removeListener(_onChanged);
+    StaffRosterStore.instance.removeListener(_onChanged);
+    super.dispose();
+  }
+
+  void _onChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final todayEntries =
+        SvReportStore.instance.entries.where((e) => _isToday(e.timestamp)).toList();
+    final absenceEntries = <String, HistoryEntry>{};
+    final latenessEntries = <String, HistoryEntry>{};
+    for (final e in todayEntries) {
+      if (e.staffId == null) continue;
+      if (e.category == '勤怠(欠勤)') {
+        absenceEntries[e.staffId!] = e;
+      } else if (e.category == '勤怠(遅刻)') {
+        latenessEntries[e.staffId!] = e;
+      }
+    }
+    final staff = StaffRosterStore.instance.staff;
+    final presentStaff = staff
+        .where((s) =>
+            !absenceEntries.containsKey(s.uid) && !latenessEntries.containsKey(s.uid))
+        .toList();
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0E1A),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0A0E1A),
+        elevation: 0,
+        title: const Text('本日の勤怠一覧', style: TextStyle(color: Colors.white, fontSize: 17)),
+        iconTheme: const IconThemeData(color: Colors.white70),
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _AttendanceSection(
+                title: '出勤',
+                icon: Icons.check_circle,
+                color: const Color(0xFF22C55E),
+                count: presentStaff.length,
+                children: presentStaff.isEmpty
+                    ? [const _EmptyRow(label: '該当者はいません。')]
+                    : presentStaff
+                        .map((s) => _StaffNameRow(name: s.displayName ?? shortStaffId(s.uid)))
+                        .toList(),
+              ),
+              const SizedBox(height: 20),
+              _AttendanceSection(
+                title: '遅刻',
+                icon: Icons.access_time,
+                color: const Color(0xFF3B82F6),
+                count: latenessEntries.length,
+                children: latenessEntries.isEmpty
+                    ? [const _EmptyRow(label: '該当者はいません。')]
+                    : latenessEntries.values.map((e) => _AttendanceReportRow(entry: e)).toList(),
+              ),
+              const SizedBox(height: 20),
+              _AttendanceSection(
+                title: '欠勤',
+                icon: Icons.event_busy,
+                color: const Color(0xFFEF4444),
+                count: absenceEntries.length,
+                children: absenceEntries.isEmpty
+                    ? [const _EmptyRow(label: '該当者はいません。')]
+                    : absenceEntries.values.map((e) => _AttendanceReportRow(entry: e)).toList(),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AttendanceSection extends StatelessWidget {
+  final String title;
+  final IconData icon;
+  final Color color;
+  final int count;
+  final List<Widget> children;
+
+  const _AttendanceSection({
+    required this.title,
+    required this.icon,
+    required this.color,
+    required this.count,
+    required this.children,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF141826),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, color: color, size: 18),
+              const SizedBox(width: 8),
+              Text(title,
+                  style: const TextStyle(
+                      color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+              const Spacer(),
+              Text('$count名',
+                  style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          const Divider(color: Colors.white12, height: 20),
+          ...children,
+        ],
+      ),
+    );
+  }
+}
+
+class _StaffNameRow extends StatelessWidget {
+  final String name;
+  const _StaffNameRow({required this.name});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          const Icon(Icons.person, color: Colors.white38, size: 16),
+          const SizedBox(width: 8),
+          Text(name, style: const TextStyle(color: Colors.white70, fontSize: 13.5)),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyRow extends StatelessWidget {
+  final String label;
+  const _EmptyRow({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Text(label, style: TextStyle(color: Colors.grey[600], fontSize: 12.5)),
+    );
+  }
+}
+
+class _AttendanceReportRow extends StatelessWidget {
+  final HistoryEntry entry;
+  const _AttendanceReportRow({required this.entry});
+
+  @override
+  Widget build(BuildContext context) {
+    final reasonField = entry.fields.firstWhere(
+      (f) => f.key == '理由',
+      orElse: () => const MapEntry('理由', '-'),
+    );
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => SvSummaryScreen(
+                summary: SvReportSummary(
+                  id: entry.id,
+                  category: entry.category,
+                  icon: entry.icon,
+                  color: entry.color,
+                  time: entry.time,
+                  fields: entry.fields,
+                  action: entry.action,
+                  history: entry.history,
+                ),
+              ),
+            ),
+          );
+        },
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Icons.person, color: Colors.white38, size: 16),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(entry.staffName ?? shortStaffId(entry.staffId),
+                        style: const TextStyle(color: Colors.white70, fontSize: 13.5)),
+                    const SizedBox(height: 2),
+                    Text('${reasonField.value} ・ ${entry.time}',
+                        style: TextStyle(color: Colors.grey[600], fontSize: 11.5)),
+                  ],
+                ),
+              ),
+              const Icon(Icons.chevron_right, color: Colors.white24, size: 18),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class CompletedTasksScreen extends StatefulWidget {
+  const CompletedTasksScreen({super.key});
+
+  @override
+  State<CompletedTasksScreen> createState() => _CompletedTasksScreenState();
+}
+
+class _CompletedTasksScreenState extends State<CompletedTasksScreen> {
+  @override
+  void initState() {
+    super.initState();
+    SvReportStore.instance.addListener(_onChanged);
+  }
+
+  @override
+  void dispose() {
+    SvReportStore.instance.removeListener(_onChanged);
+    super.dispose();
+  }
+
+  void _onChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final entries = SvReportStore.instance.entries
+        .where((e) => e.category == 'タスク完了' && _isToday(e.timestamp))
+        .toList();
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0E1A),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0A0E1A),
+        elevation: 0,
+        title: const Text('本日の完了一覧', style: TextStyle(color: Colors.white, fontSize: 17)),
+        iconTheme: const IconThemeData(color: Colors.white70),
+      ),
+      body: SafeArea(
+        child: entries.isEmpty
+            ? Center(
+                child: Text('本日の完了報告はまだありません。',
+                    style: TextStyle(color: Colors.grey[500], fontSize: 13)),
+              )
+            : ListView.builder(
+                padding: const EdgeInsets.all(16),
+                itemCount: entries.length,
+                itemBuilder: (context, index) {
+                  final e = entries[index];
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Material(
+                      color: Colors.transparent,
+                      borderRadius: BorderRadius.circular(16),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => SvSummaryScreen(
+                                summary: SvReportSummary(
+                                  id: e.id,
+                                  category: e.category,
+                                  icon: e.icon,
+                                  color: e.color,
+                                  time: e.time,
+                                  fields: e.fields,
+                                  action: e.action,
+                                  history: e.history,
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF141826),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: Colors.white10),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              CircleAvatar(
+                                radius: 20,
+                                backgroundColor: e.color.withValues(alpha: 0.3),
+                                child: Icon(e.icon, color: Colors.white, size: 18),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Text(e.category,
+                                            style: TextStyle(
+                                                color: e.color,
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.bold)),
+                                        Text(e.time,
+                                            style: TextStyle(
+                                                color: Colors.grey[500], fontSize: 11)),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(e.title,
+                                        style: const TextStyle(color: Colors.white, fontSize: 13.5),
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis),
+                                    const SizedBox(height: 4),
+                                    Text('担当: ${e.staffName ?? shortStaffId(e.staffId)}',
+                                        style: TextStyle(color: Colors.grey[600], fontSize: 11)),
+                                    const SizedBox(height: 8),
+                                    _ReportStatusBadge(entry: e),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
       ),
     );
   }
