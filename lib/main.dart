@@ -7,6 +7,8 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'firebase_options.dart';
+import 'src/before_unload_guard_stub.dart'
+    if (dart.library.html) 'src/before_unload_guard_web.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -28,7 +30,31 @@ class JarvisApp extends StatelessWidget {
         scaffoldBackgroundColor: const Color(0xFF0A0E1A),
         useMaterial3: true,
       ),
-      home: const LoginScreen(),
+      home: const _AuthGate(),
+    );
+  }
+}
+
+/// 起動時にFirebaseの認証状態を確認し、既にログイン済みならログイン画面を
+/// 経由せず直接ホーム画面へ進む。ページのリロード後も再ログインが不要になる。
+class _AuthGate extends StatelessWidget {
+  const _AuthGate();
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            backgroundColor: Color(0xFF0A0E1A),
+            body: Center(
+              child: CircularProgressIndicator(color: Colors.cyanAccent),
+            ),
+          );
+        }
+        return snapshot.data != null ? const HomePage() : const LoginScreen();
+      },
     );
   }
 }
@@ -1274,6 +1300,32 @@ class HistoryEntry {
   }
 }
 
+/// 報告送信前にドキュメントIDを払い出す。オフライン時のタイムアウト後に
+/// ユーザーが再送信しても同じIDへの書き込みになるよう、`HistoryEntry`生成時点で
+/// (Firestoreへの書き込みより前に)呼び出しておく。
+String generateReportId() =>
+    FirebaseFirestore.instance.collection('reports').doc().id;
+
+/// カテゴリ単位で「まだ成功が確認できていない送信」のドキュメントIDを覚えておく。
+/// 送信中(オフラインでキューされたままなど)に画面を離脱し、同じカテゴリの報告フローを
+/// もう一度最初からやり直した場合、新しいIDで新規ドキュメントを作ってしまうと
+/// 前回の送信がオンライン復帰時に反映された分と合わせて2件の重複報告になる。
+/// 同じカテゴリではIDを使い回す(=同じドキュメントへの上書き)ことで、
+/// 最終的にFirestoreに残るのは一番最後に送信した内容のみになり、重複を防げる。
+/// 送信が成功した時点でrelease()し、次回は新規IDになるようにする。
+class PendingSubmissionRegistry {
+  PendingSubmissionRegistry._() {
+    FirebaseAuth.instance.authStateChanges().listen((_) => _pending.clear());
+  }
+  static final PendingSubmissionRegistry instance = PendingSubmissionRegistry._();
+
+  final Map<String, String> _pending = {};
+
+  String claim(String category) => _pending[category] ??= generateReportId();
+
+  void release(String category) => _pending.remove(category);
+}
+
 String formatNowTime() {
   final now = DateTime.now();
   final hh = now.hour.toString().padLeft(2, '0');
@@ -1367,15 +1419,23 @@ class HistoryStore extends ChangeNotifier {
 
   /// Firestoreの`reports`コレクションへ書き込む。staffIdはログイン中ユーザーから付与する。
   /// storeIdはSVの全件閲覧機能を実装する際に使う予約フィールド(現時点では未使用)。
+  ///
+  /// entry.id(呼び出し側で事前に払い出したドキュメントID)に対して`set`する。
+  /// オフライン時、Firestoreはこの書き込みをキューイングして待ち続け例外を投げないため、
+  /// 一定時間で諦めて呼び出し側にエラーとして伝えるために`timeout`を掛けている。
+  /// その際、自動採番の`add()`だと再送信で新規ドキュメントが生成され、元のキューイング済み
+  /// 書き込みがオンライン復帰時に反映されると報告が重複してしまう。`entry.id`への`set`に
+  /// することで、再送信は同じドキュメントへの上書きになり重複を防げる。
   Future<void> add(HistoryEntry entry) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
-    await _firestore.collection('reports').add({
+    final docId = entry.id ?? _firestore.collection('reports').doc().id;
+    await _firestore.collection('reports').doc(docId).set({
       ...entry.toMap(),
       'staffId': uid,
       'staffName': UserSession.instance.displayName,
       'storeId': null,
-    });
+    }).timeout(const Duration(seconds: 10));
   }
 
   /// 今月分の該当カテゴリの件数を数える(勤怠の頻度パターン連携などに使用)。
@@ -1839,6 +1899,7 @@ class _AttendanceChatScreenState extends State<AttendanceChatScreen> {
     });
 
     final entry = HistoryEntry(
+      id: PendingSubmissionRegistry.instance.claim('勤怠($typeLabel)'),
       category: '勤怠($typeLabel)',
       title: _report.reason ?? typeLabel,
       action: action,
@@ -1862,8 +1923,11 @@ class _AttendanceChatScreenState extends State<AttendanceChatScreen> {
       _isSaving = true;
       _saveFailed = false;
     });
+    BeforeUnloadGuard.enable();
     try {
       await HistoryStore.instance.add(entry);
+      PendingSubmissionRegistry.instance.release(entry.category);
+      BeforeUnloadGuard.disable();
       if (!mounted) return;
       setState(() {
         _isSaving = false;
@@ -1871,6 +1935,7 @@ class _AttendanceChatScreenState extends State<AttendanceChatScreen> {
       });
       _addJarvisMessage('ありがとうございます。内容を確認し、SVに共有しました。');
     } catch (_) {
+      BeforeUnloadGuard.disable();
       if (!mounted) return;
       setState(() {
         _isSaving = false;
@@ -2253,6 +2318,7 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
     setState(() => _isComplete = true);
 
     final entry = HistoryEntry(
+      id: PendingSubmissionRegistry.instance.claim('業務報告'),
       category: '業務報告',
       title: '${_data.storeName}:${_data.content}',
       action: action,
@@ -2273,8 +2339,11 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
       _isSaving = true;
       _saveFailed = false;
     });
+    BeforeUnloadGuard.enable();
     try {
       await HistoryStore.instance.add(entry);
+      PendingSubmissionRegistry.instance.release(entry.category);
+      BeforeUnloadGuard.disable();
       if (!mounted) return;
       setState(() {
         _isSaving = false;
@@ -2282,6 +2351,7 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
       });
       _addJarvis('ありがとうございます。内容を確認し、SVに共有しました。');
     } catch (_) {
+      BeforeUnloadGuard.disable();
       if (!mounted) return;
       setState(() {
         _isSaving = false;
@@ -2534,6 +2604,7 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
     setState(() => _isComplete = true);
 
     final entry = HistoryEntry(
+      id: PendingSubmissionRegistry.instance.claim('業務相談'),
       category: '業務相談',
       title: '[${_data.topic}] ${_data.content}',
       action: action,
@@ -2553,8 +2624,11 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
       _isSaving = true;
       _saveFailed = false;
     });
+    BeforeUnloadGuard.enable();
     try {
       await HistoryStore.instance.add(entry);
+      PendingSubmissionRegistry.instance.release(entry.category);
+      BeforeUnloadGuard.disable();
       if (!mounted) return;
       setState(() {
         _isSaving = false;
@@ -2562,6 +2636,7 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
       });
       _addJarvis('ありがとうございます。内容を確認し、SVに共有しました。');
     } catch (_) {
+      BeforeUnloadGuard.disable();
       if (!mounted) return;
       setState(() {
         _isSaving = false;
@@ -2866,6 +2941,7 @@ class _TaskCompletionChatScreenState extends State<TaskCompletionChatScreen> {
     setState(() => _isComplete = true);
 
     final entry = HistoryEntry(
+      id: PendingSubmissionRegistry.instance.claim('タスク完了'),
       category: 'タスク完了',
       title: _data.taskName ?? '-',
       action: action,
@@ -2890,8 +2966,11 @@ class _TaskCompletionChatScreenState extends State<TaskCompletionChatScreen> {
       _isSaving = true;
       _saveFailed = false;
     });
+    BeforeUnloadGuard.enable();
     try {
       await HistoryStore.instance.add(entry);
+      PendingSubmissionRegistry.instance.release(entry.category);
+      BeforeUnloadGuard.disable();
       if (!mounted) return;
       setState(() {
         _isSaving = false;
@@ -2899,6 +2978,7 @@ class _TaskCompletionChatScreenState extends State<TaskCompletionChatScreen> {
       });
       _addJarvis('ありがとうございます。内容を確認し、SVに共有しました。');
     } catch (_) {
+      BeforeUnloadGuard.disable();
       if (!mounted) return;
       setState(() {
         _isSaving = false;
@@ -3156,6 +3236,7 @@ class _OtherChatScreenState extends State<OtherChatScreen> {
     setState(() => _isComplete = true);
 
     final entry = HistoryEntry(
+      id: PendingSubmissionRegistry.instance.claim('その他'),
       category: 'その他',
       title: _data.content ?? '-',
       action: action,
@@ -3174,8 +3255,11 @@ class _OtherChatScreenState extends State<OtherChatScreen> {
       _isSaving = true;
       _saveFailed = false;
     });
+    BeforeUnloadGuard.enable();
     try {
       await HistoryStore.instance.add(entry);
+      PendingSubmissionRegistry.instance.release(entry.category);
+      BeforeUnloadGuard.disable();
       if (!mounted) return;
       setState(() {
         _isSaving = false;
@@ -3183,6 +3267,7 @@ class _OtherChatScreenState extends State<OtherChatScreen> {
       });
       _addJarvis('ありがとうございます。内容を確認し、SVに共有しました。');
     } catch (_) {
+      BeforeUnloadGuard.disable();
       if (!mounted) return;
       setState(() {
         _isSaving = false;
@@ -3356,6 +3441,7 @@ class _AnnouncementChatScreenState extends State<AnnouncementChatScreen> {
     setState(() => _isComplete = true);
 
     final entry = HistoryEntry(
+      id: PendingSubmissionRegistry.instance.claim('周知確認'),
       category: '周知確認',
       title: hadQuestion ? (_questionText ?? '質問あり') : '確認済み',
       action: action,
@@ -3375,8 +3461,11 @@ class _AnnouncementChatScreenState extends State<AnnouncementChatScreen> {
       _saveFailed = false;
       _pendingHadQuestion = hadQuestion;
     });
+    BeforeUnloadGuard.enable();
     try {
       await HistoryStore.instance.add(entry);
+      PendingSubmissionRegistry.instance.release(entry.category);
+      BeforeUnloadGuard.disable();
       if (!mounted) return;
       setState(() {
         _isSaving = false;
@@ -3386,6 +3475,7 @@ class _AnnouncementChatScreenState extends State<AnnouncementChatScreen> {
           ? 'ありがとうございます。ご質問をSVに共有しました。'
           : 'ご確認ありがとうございます。SVに確認済みとして共有しました。');
     } catch (_) {
+      BeforeUnloadGuard.disable();
       if (!mounted) return;
       setState(() {
         _isSaving = false;
@@ -4791,6 +4881,7 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
   Future<void> _decide(SuggestedAction action, String message) async {
     if (_isSubmitting) return; // 二重送信防止
     setState(() => _isSubmitting = true);
+    BeforeUnloadGuard.enable();
 
     final reportId = widget.summary.id;
     final uid = FirebaseAuth.instance.currentUser?.uid;
@@ -4806,12 +4897,20 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
         update['approvedAt'] = FieldValue.serverTimestamp();
       }
       try {
-        await FirebaseFirestore.instance.collection('reports').doc(reportId).update(update);
+        // オフライン時、Firestoreは書き込みをキューイングして待ち続け例外を投げないため、
+        // 一定時間で諦めてエラー扱いにする(updateは同じフィールドへの上書きで冪等なため、
+        // 再度ボタンを押し直しても重複の心配はない)。
+        await FirebaseFirestore.instance
+            .collection('reports')
+            .doc(reportId)
+            .update(update)
+            .timeout(const Duration(seconds: 10));
         success = true;
       } catch (e) {
         debugPrint('[SvSummaryScreen] 対応状況の更新に失敗しました: $e');
       }
     }
+    BeforeUnloadGuard.disable();
 
     if (!mounted) return;
 
