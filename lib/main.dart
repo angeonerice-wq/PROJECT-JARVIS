@@ -30,6 +30,21 @@ class JarvisApp extends StatelessWidget {
         scaffoldBackgroundColor: const Color(0xFF0A0E1A),
         useMaterial3: true,
       ),
+      // PC/ワイド画面での応急処置: コンテンツ全体に最大幅を設けて中央寄せにする。
+      // 本格的なレスポンシブ対応(PC専用レイアウト)ではなく、モバイル向けUIが
+      // 間延びして見えるのを防ぐための暫定対応。各画面(Scaffold)は変更せず、
+      // MaterialAppのbuilderでアプリ全体に一括適用する。
+      builder: (context, child) {
+        return Container(
+          color: const Color(0xFF0A0E1A),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 700),
+              child: child,
+            ),
+          ),
+        );
+      },
       home: const _AuthGate(),
     );
   }
