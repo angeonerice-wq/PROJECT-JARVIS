@@ -4658,6 +4658,26 @@ class _SettingsTabBodyState extends State<SettingsTabBody> {
 
   Future<void> _handleLogout() => performLogout(context);
 
+  /// 「利用規約」「プライバシーポリシー」など、まだ文書を用意できていない項目の
+  /// タップ時に表示する簡易ダイアログ。
+  void _showComingSoonDialog(String label) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF141826),
+        title: Text(label, style: const TextStyle(color: Colors.white)),
+        content: const Text('準備中です。今しばらくお待ちください。',
+            style: TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('閉じる'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return SingleChildScrollView(
@@ -4735,8 +4755,16 @@ class _SettingsTabBodyState extends State<SettingsTabBody> {
               style: TextStyle(color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
           const _SettingsNavTile(icon: Icons.info_outline, label: 'バージョン情報', trailing: 'v0.1.0'),
-          const _SettingsNavTile(icon: Icons.description_outlined, label: '利用規約'),
-          const _SettingsNavTile(icon: Icons.privacy_tip_outlined, label: 'プライバシーポリシー'),
+          _SettingsNavTile(
+            icon: Icons.description_outlined,
+            label: '利用規約',
+            onTap: () => _showComingSoonDialog('利用規約'),
+          ),
+          _SettingsNavTile(
+            icon: Icons.privacy_tip_outlined,
+            label: 'プライバシーポリシー',
+            onTap: () => _showComingSoonDialog('プライバシーポリシー'),
+          ),
           const SizedBox(height: 20),
           _SettingsNavTile(
             icon: Icons.logout,
