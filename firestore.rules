@@ -42,6 +42,26 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // SVがスタッフへ割り当てるタスク。作成できるのはSVのみで、自分自身をassignedByとして
+    // 記録する場合に限る。閲覧は割り当て先本人とSVのみ。作成後の内容変更・削除は現状想定
+    // していないため許可しない(必要になれば別途検討する)。
+    match /tasks/{taskId} {
+      allow read: if request.auth != null &&
+        (resource.data.staffId == request.auth.uid || isSv());
+
+      allow create: if isSv()
+                    && request.resource.data.assignedBy == request.auth.uid
+                    && request.resource.data.keys().hasAll(
+                         ['staffId', 'assignedBy', 'title', 'detail', 'createdAt']
+                       )
+                    && request.resource.data.staffId is string
+                    && request.resource.data.title is string
+                    && request.resource.data.detail is string
+                    && request.resource.data.createdAt is timestamp;
+
+      allow update, delete: if false;
+    }
+
     // スタッフ/SVのロールを保持するプロフィール。ロールの自己書き換えを防ぐため、
     // クライアントからの書き込みは一切許可しない(アカウント発行は管理者が行う)。
     // SVは、自分がsupervisorId(担当SV)として設定されているスタッフのプロフィールのみ
