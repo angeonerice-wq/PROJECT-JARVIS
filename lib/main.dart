@@ -485,6 +485,17 @@ class _AppDrawer extends StatelessWidget {
               ),
             ),
             const Divider(color: Colors.white10, height: 1),
+            if (UserSession.instance.role == UserRole.sv)
+              ListTile(
+                leading: const Icon(Icons.assignment_ind_outlined, color: Colors.white70),
+                title: const Text('スタッフにタスクを割り当てる', style: TextStyle(color: Colors.white)),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const AssignTaskScreen()),
+                  );
+                },
+              ),
             ListTile(
               leading: const Icon(Icons.logout, color: Color(0xFFEF4444)),
               title: const Text('ログアウト', style: TextStyle(color: Color(0xFFEF4444))),
@@ -557,6 +568,15 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
             e.reviewedAction == SuggestedAction.escalate)
         .length;
 
+    // 通知ベルのバッジ件数。統計カードの未確認/要対応(本日分のみ)とは異なり、
+    // タップ先のサマリータブと一致させるため全期間で算出する。
+    final bellBadgeCount = isSv
+        ? filterReportsByTab(SvReportStore.instance.entries, SummaryReportTab.unreviewed)
+                .length +
+            filterReportsByTab(SvReportStore.instance.entries, SummaryReportTab.needsAction)
+                .length
+        : 0;
+
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Column(
@@ -576,31 +596,46 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
                   ),
                 ),
               ),
-              Stack(
-                clipBehavior: Clip.none,
-                    children: [
-                      const Icon(Icons.notifications_none,
-                          color: Colors.white70, size: 26),
-                      Positioned(
-                        right: -2,
-                        top: -2,
-                        child: Container(
-                          padding: const EdgeInsets.all(3),
-                          decoration: const BoxDecoration(
-                            color: Colors.redAccent,
-                            shape: BoxShape.circle,
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(20),
+                  onTap: isSv
+                      ? () => widget.onOpenSummaryTab?.call(SummaryReportTab.unreviewed)
+                      : null,
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        const Icon(Icons.notifications_none,
+                            color: Colors.white70, size: 26),
+                        if (bellBadgeCount > 0)
+                          Positioned(
+                            right: -2,
+                            top: -2,
+                            child: Container(
+                              padding: const EdgeInsets.all(3),
+                              decoration: const BoxDecoration(
+                                color: Colors.redAccent,
+                                shape: BoxShape.circle,
+                              ),
+                              child: Text(
+                                bellBadgeCount > 99 ? '99+' : '$bellBadgeCount',
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold),
+                              ),
+                            ),
                           ),
-                          child: const Text('3',
-                              style: TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.bold)),
-                        ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ],
+                ),
               ),
+            ],
+          ),
               const SizedBox(height: 24),
               const Center(
                 child: JarvisLogo(size: 118),
@@ -3805,6 +3840,25 @@ extension SummaryReportTabX on SummaryReportTab {
   }
 }
 
+/// SVサマリー画面のタブ・ホーム画面の通知ベルバッジなど、複数箇所で共用する
+/// 「未確認」「要対応」の判定ロジック。未確認(reviewedAt未設定)と要対応
+/// (reviewedActionが再調整/エスカレーション)は定義上排他なので、合算しても
+/// 二重カウントにはならない。
+List<HistoryEntry> filterReportsByTab(List<HistoryEntry> entries, SummaryReportTab tab) {
+  switch (tab) {
+    case SummaryReportTab.unreviewed:
+      return entries.where((e) => e.reviewedAt == null).toList();
+    case SummaryReportTab.needsAction:
+      return entries
+          .where((e) =>
+              e.reviewedAction == SuggestedAction.needsReschedule ||
+              e.reviewedAction == SuggestedAction.escalate)
+          .toList();
+    case SummaryReportTab.all:
+      return entries;
+  }
+}
+
 class SummaryTabBody extends StatefulWidget {
   /// ホーム画面の統計カードから遷移した際に、開いた時点で選択しておくタブ。
   /// nullの場合は前回選択(初期値は全件)を維持する。
@@ -3852,21 +3906,6 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
 
   void _onChanged() {
     if (mounted) setState(() {});
-  }
-
-  List<HistoryEntry> _filterByTab(List<HistoryEntry> entries, SummaryReportTab tab) {
-    switch (tab) {
-      case SummaryReportTab.unreviewed:
-        return entries.where((e) => e.reviewedAt == null).toList();
-      case SummaryReportTab.needsAction:
-        return entries
-            .where((e) =>
-                e.reviewedAction == SuggestedAction.needsReschedule ||
-                e.reviewedAction == SuggestedAction.escalate)
-            .toList();
-      case SummaryReportTab.all:
-        return entries;
-    }
   }
 
   List<_CategoryCount> _realBreakdown(List<HistoryEntry> entries) {
@@ -4082,7 +4121,7 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
             ),
             const SizedBox(height: 12),
             Builder(builder: (context) {
-              final filteredEntries = _filterByTab(svEntries, _selectedTab);
+              final filteredEntries = filterReportsByTab(svEntries, _selectedTab);
               if (filteredEntries.isEmpty) {
                 return Padding(
                   padding: const EdgeInsets.symmetric(vertical: 12),
@@ -4634,6 +4673,211 @@ class _CompletedTasksScreenState extends State<CompletedTasksScreen> {
                   );
                 },
               ),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// SVによるタスク割り当て(ドロワーから遷移、SV専用)
+// ============================================================
+
+class AssignTaskScreen extends StatefulWidget {
+  const AssignTaskScreen({super.key});
+
+  @override
+  State<AssignTaskScreen> createState() => _AssignTaskScreenState();
+}
+
+class _AssignTaskScreenState extends State<AssignTaskScreen> {
+  final TextEditingController _titleController = TextEditingController();
+  final TextEditingController _detailController = TextEditingController();
+  StaffProfile? _selectedStaff;
+  bool _isSaving = false;
+  bool _saveFailed = false;
+  String? _validationError;
+
+  @override
+  void initState() {
+    super.initState();
+    StaffRosterStore.instance.addListener(_onRosterChanged);
+  }
+
+  @override
+  void dispose() {
+    StaffRosterStore.instance.removeListener(_onRosterChanged);
+    _titleController.dispose();
+    _detailController.dispose();
+    super.dispose();
+  }
+
+  void _onRosterChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _submit() async {
+    final staff = _selectedStaff;
+    final title = _titleController.text.trim();
+    final detail = _detailController.text.trim();
+    if (staff == null || title.isEmpty) {
+      setState(() => _validationError = '担当スタッフとタイトルは必須です。');
+      return;
+    }
+
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    setState(() {
+      _isSaving = true;
+      _saveFailed = false;
+      _validationError = null;
+    });
+    try {
+      await FirebaseFirestore.instance.collection('tasks').add({
+        'staffId': staff.uid,
+        'assignedBy': uid,
+        'title': title,
+        'detail': detail,
+        'createdAt': FieldValue.serverTimestamp(),
+      }).timeout(const Duration(seconds: 10));
+      if (!mounted) return;
+      setState(() => _isSaving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${staff.displayName ?? shortStaffId(staff.uid)}さんにタスクを割り当てました。'),
+          backgroundColor: const Color(0xFF141826),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      Navigator.of(context).pop();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+        _saveFailed = true;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final staff = StaffRosterStore.instance.staff;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0E1A),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0A0E1A),
+        elevation: 0,
+        title: const Text('タスクを割り当てる', style: TextStyle(color: Colors.white, fontSize: 17)),
+        iconTheme: const IconThemeData(color: Colors.white70),
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('担当スタッフ',
+                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              if (staff.isEmpty)
+                Text('配下スタッフが見つかりません。', style: TextStyle(color: Colors.grey[500], fontSize: 12.5))
+              else
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF141826),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.white10),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<StaffProfile>(
+                      value: _selectedStaff,
+                      isExpanded: true,
+                      dropdownColor: const Color(0xFF141826),
+                      hint: Text('スタッフを選択', style: TextStyle(color: Colors.grey[500])),
+                      style: const TextStyle(color: Colors.white, fontSize: 14),
+                      items: staff
+                          .map((s) => DropdownMenuItem(
+                                value: s,
+                                child: Text(s.displayName ?? shortStaffId(s.uid)),
+                              ))
+                          .toList(),
+                      onChanged: _isSaving
+                          ? null
+                          : (v) => setState(() {
+                                _selectedStaff = v;
+                                _validationError = null;
+                              }),
+                    ),
+                  ),
+                ),
+              const SizedBox(height: 20),
+              const Text('タイトル',
+                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _titleController,
+                enabled: !_isSaving,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  filled: true,
+                  fillColor: const Color(0xFF141826),
+                  hintText: '例:什器の在庫確認',
+                  hintStyle: TextStyle(color: Colors.grey[600]),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              const Text('詳細(任意)',
+                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _detailController,
+                enabled: !_isSaving,
+                maxLines: 4,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  filled: true,
+                  fillColor: const Color(0xFF141826),
+                  hintText: '具体的な作業内容や期限などを入力してください',
+                  hintStyle: TextStyle(color: Colors.grey[600]),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+              if (_validationError != null) ...[
+                const SizedBox(height: 12),
+                Text(_validationError!,
+                    style: const TextStyle(color: Color(0xFFEF4444), fontSize: 12.5)),
+              ],
+              const SizedBox(height: 24),
+              if (_isSaving || _saveFailed)
+                _SubmitStatusBar(isSaving: _isSaving, onRetry: _submit)
+              else
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _submit,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.cyanAccent,
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: const Text('割り当てる', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }
