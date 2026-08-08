@@ -1072,10 +1072,14 @@ class _SvHomeTabBody extends StatelessWidget {
               ),
               CategoryCard(
                 title: '既読・完了確認',
-                subtitle: '送信済みの\n既読/完了状況',
+                subtitle: '送信済みタスクの\n完了/問い合わせ状況',
                 icon: Icons.fact_check_outlined,
                 color: const Color(0xFF22C55E),
-                onTap: () => showComingSoonDialog(context, '既読・完了確認'),
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const SentTasksScreen()),
+                  );
+                },
               ),
               CategoryCard(
                 title: 'お知らせ配信',
@@ -2044,15 +2048,76 @@ class AssignedTaskStore extends ChangeNotifier {
   }
 }
 
+/// SVが自分自身で割り当てた(assignedBy==自分uid)タスクをリアルタイム購読するストア。
+/// AssignedTaskStoreと全く同じ構造で、フィールドをstaffId→assignedByに変えただけ。
+/// assignedByは常にSVのuidになる設計(スタッフはtasksを作成できない)なので、
+/// AssignedTaskStoreと同様ロールでの絞り込みは行わない(スタッフで実行しても0件になるだけ)。
+class SentTaskStore extends ChangeNotifier {
+  SentTaskStore._() {
+    _authSub = FirebaseAuth.instance.authStateChanges().listen(_onAuthChanged);
+  }
+  static final SentTaskStore instance = SentTaskStore._();
+
+  final _firestore = FirebaseFirestore.instance;
+  StreamSubscription<User?>? _authSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _entriesSub;
+  List<AssignedTask> _entries = [];
+
+  List<AssignedTask> get entries => List.unmodifiable(_entries);
+
+  void _onAuthChanged(User? user) {
+    _entriesSub?.cancel();
+    if (user == null) {
+      _entries = [];
+      notifyListeners();
+      return;
+    }
+    _entriesSub = _firestore
+        .collection('tasks')
+        .where('assignedBy', isEqualTo: user.uid)
+        .orderBy('createdAt', descending: true)
+        .snapshots()
+        .listen((snapshot) {
+      _entries = snapshot.docs
+          .map((doc) => AssignedTask.fromFirestore(doc.id, doc.data()))
+          .toList();
+      notifyListeners();
+    }, onError: (Object e, StackTrace st) {
+      debugPrint('[SentTaskStore] snapshot error: $e');
+    });
+  }
+
+  @override
+  void dispose() {
+    _authSub?.cancel();
+    _entriesSub?.cancel();
+    super.dispose();
+  }
+}
+
+/// sourceTaskIdが紐づいた報告(タスク完了・業務相談など)を、タスクIDごとに
+/// グルーピングする。1つのタスクに完了報告と問い合わせの両方が紐づくこともあるため、
+/// 単純な真偽値ではなくリストで持たせておき、呼び出し側で必要なカテゴリだけを
+/// 見るようにする(ホーム画面・タスク一覧・SVの送信済みタスク一覧などで共用)。
+Map<String, List<HistoryEntry>> taskLinkedReportsFrom(List<HistoryEntry> entries) {
+  final map = <String, List<HistoryEntry>>{};
+  for (final e in entries) {
+    final taskId = e.sourceTaskId;
+    if (taskId == null) continue;
+    map.putIfAbsent(taskId, () => []).add(e);
+  }
+  return map;
+}
+
 /// sourceTaskIdが紐づいた「タスク完了」報告から、完了済みタスクIDの集合を求める。
 /// 「問い合わせ」(業務相談カテゴリ)もsourceTaskIdを持つが、これはタスクの完了を
 /// 意味しないため、category=='タスク完了'に限定して判定する。ホーム画面の未完了件数
 /// (_HomeTabBody)とタスク一覧(AssignedTasksScreen)の両方で使う共通ロジック。
 Set<String> completedTaskIdsFrom(List<HistoryEntry> entries) {
-  return entries
-      .where((e) => e.category == 'タスク完了')
-      .map((e) => e.sourceTaskId)
-      .whereType<String>()
+  final grouped = taskLinkedReportsFrom(entries);
+  return grouped.entries
+      .where((e) => e.value.any((r) => r.category == 'タスク完了'))
+      .map((e) => e.key)
       .toSet();
 }
 
@@ -5700,6 +5765,424 @@ class _TaskQuickCompleteScreenState extends State<TaskQuickCompleteScreen> {
                         style: TextStyle(fontWeight: FontWeight.bold)),
                   ),
                 ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// SVによる送信済みタスクの確認(SVホーム「既読・完了確認」から遷移)
+// 読み取り専用。既存の書き込みロジック(タスク作成・完了報告・問い合わせ)には
+// 一切触れない。
+// ============================================================
+
+enum _SentTaskTab { incomplete, completed, all }
+
+extension on _SentTaskTab {
+  String get label {
+    switch (this) {
+      case _SentTaskTab.incomplete:
+        return '未完了';
+      case _SentTaskTab.completed:
+        return '完了済み';
+      case _SentTaskTab.all:
+        return '全件';
+    }
+  }
+}
+
+class SentTasksScreen extends StatefulWidget {
+  const SentTasksScreen({super.key});
+
+  @override
+  State<SentTasksScreen> createState() => _SentTasksScreenState();
+}
+
+class _SentTasksScreenState extends State<SentTasksScreen> {
+  _SentTaskTab _selectedTab = _SentTaskTab.incomplete;
+
+  @override
+  void initState() {
+    super.initState();
+    SentTaskStore.instance.addListener(_onChanged);
+    SvReportStore.instance.addListener(_onChanged);
+    StaffRosterStore.instance.addListener(_onChanged);
+  }
+
+  @override
+  void dispose() {
+    SentTaskStore.instance.removeListener(_onChanged);
+    SvReportStore.instance.removeListener(_onChanged);
+    StaffRosterStore.instance.removeListener(_onChanged);
+    super.dispose();
+  }
+
+  void _onChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tasks = SentTaskStore.instance.entries;
+    final linkedReports = taskLinkedReportsFrom(SvReportStore.instance.entries);
+    final staffNames = {
+      for (final s in StaffRosterStore.instance.staff) s.uid: s.displayName,
+    };
+
+    bool isCompleted(String taskId) =>
+        linkedReports[taskId]?.any((r) => r.category == 'タスク完了') ?? false;
+
+    List<AssignedTask> filtered;
+    switch (_selectedTab) {
+      case _SentTaskTab.incomplete:
+        filtered = tasks.where((t) => !isCompleted(t.id)).toList();
+        break;
+      case _SentTaskTab.completed:
+        filtered = tasks.where((t) => isCompleted(t.id)).toList();
+        break;
+      case _SentTaskTab.all:
+        filtered = tasks;
+        break;
+    }
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0E1A),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0A0E1A),
+        elevation: 0,
+        title: const Text('送信したタスク', style: TextStyle(color: Colors.white, fontSize: 17)),
+        iconTheme: const IconThemeData(color: Colors.white70),
+      ),
+      body: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Row(
+                children: [
+                  for (final tab in _SentTaskTab.values) ...[
+                    if (tab != _SentTaskTab.values.first) const SizedBox(width: 8),
+                    Expanded(
+                      child: _SummaryTabChip(
+                        label: tab.label,
+                        selected: tab == _selectedTab,
+                        onTap: () => setState(() => _selectedTab = tab),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            Expanded(
+              child: filtered.isEmpty
+                  ? Center(
+                      child: Text('該当するタスクはありません。',
+                          style: TextStyle(color: Colors.grey[500], fontSize: 13)),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                      itemCount: filtered.length,
+                      itemBuilder: (context, index) {
+                        final task = filtered[index];
+                        final reports = linkedReports[task.id] ?? const [];
+                        final completed = reports.any((r) => r.category == 'タスク完了');
+                        final hasInquiry = reports.any((r) => r.category == '業務相談');
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: Material(
+                            color: Colors.transparent,
+                            borderRadius: BorderRadius.circular(16),
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(16),
+                              onTap: () {
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (_) => SentTaskDetailScreen(
+                                      task: task,
+                                      linkedReports: reports,
+                                      staffName: staffNames[task.staffId],
+                                    ),
+                                  ),
+                                );
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.all(14),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF141826),
+                                  borderRadius: BorderRadius.circular(16),
+                                  border: Border.all(color: Colors.white10),
+                                ),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const CircleAvatar(
+                                      radius: 20,
+                                      backgroundColor: Color(0x33F97316),
+                                      child: Icon(Icons.assignment_ind_outlined,
+                                          color: Colors.white, size: 18),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                            children: [
+                                              Expanded(
+                                                child: Text(
+                                                  '宛先: ${staffNames[task.staffId] ?? shortStaffId(task.staffId)}',
+                                                  style: const TextStyle(
+                                                      color: Color(0xFFF97316),
+                                                      fontSize: 12,
+                                                      fontWeight: FontWeight.bold),
+                                                ),
+                                              ),
+                                              Text(task.time,
+                                                  style: TextStyle(
+                                                      color: Colors.grey[500], fontSize: 11)),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(task.title,
+                                              style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 13.5,
+                                                  height: 1.3)),
+                                          const SizedBox(height: 8),
+                                          Wrap(
+                                            spacing: 6,
+                                            runSpacing: 6,
+                                            children: [
+                                              _SentTaskStatusChip(isCompleted: completed),
+                                              if (hasInquiry) const _InquiryChip(),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const Icon(Icons.chevron_right, color: Colors.white24, size: 18),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SentTaskStatusChip extends StatelessWidget {
+  final bool isCompleted;
+  const _SentTaskStatusChip({required this.isCompleted});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isCompleted ? const Color(0xFF22C55E) : Colors.grey[500]!;
+    final icon = isCompleted ? Icons.check_circle : Icons.pending_outlined;
+    final label = isCompleted ? '完了済み' : '未完了';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: isCompleted ? color.withValues(alpha: 0.15) : Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: isCompleted ? 0.5 : 0.6)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 4),
+          Text(label, style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.bold)),
+        ],
+      ),
+    );
+  }
+}
+
+class _InquiryChip extends StatelessWidget {
+  const _InquiryChip();
+
+  @override
+  Widget build(BuildContext context) {
+    const color = Color(0xFFA855F7);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.6)),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.chat_bubble_outline, size: 12, color: color),
+          SizedBox(width: 4),
+          Text('問い合わせあり',
+              style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.bold)),
+        ],
+      ),
+    );
+  }
+}
+
+class SentTaskDetailScreen extends StatelessWidget {
+  final AssignedTask task;
+  final List<HistoryEntry> linkedReports;
+  final String? staffName;
+
+  const SentTaskDetailScreen({
+    super.key,
+    required this.task,
+    required this.linkedReports,
+    this.staffName,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final completed = linkedReports.any((r) => r.category == 'タスク完了');
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0E1A),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0A0E1A),
+        elevation: 0,
+        title: const Text('タスク詳細', style: TextStyle(color: Colors.white, fontSize: 17)),
+        iconTheme: const IconThemeData(color: Colors.white70),
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF141826),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white10),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const CircleAvatar(
+                          radius: 20,
+                          backgroundColor: Color(0x33F97316),
+                          child: Icon(Icons.assignment_ind_outlined,
+                              color: Colors.white, size: 18),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(task.title,
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text('宛先: ${staffName ?? shortStaffId(task.staffId)}',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
+                    const SizedBox(height: 4),
+                    Text('送信: ${task.time}',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        _SentTaskStatusChip(isCompleted: completed),
+                        if (linkedReports.any((r) => r.category == '業務相談'))
+                          const _InquiryChip(),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text('内容',
+                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF141826),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white10),
+                ),
+                child: Text(
+                  task.detail.isEmpty ? '(詳細の記載はありません)' : task.detail,
+                  style: const TextStyle(color: Colors.white70, fontSize: 13.5, height: 1.5),
+                ),
+              ),
+              if (linkedReports.isNotEmpty) ...[
+                const SizedBox(height: 20),
+                const Text('スタッフからの回答',
+                    style:
+                        TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                for (final report in linkedReports) ...[
+                  Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.only(bottom: 10),
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF141826),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.white10),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(report.category,
+                                style: TextStyle(
+                                    color: report.color,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold)),
+                            Text(report.time,
+                                style: TextStyle(color: Colors.grey[500], fontSize: 11)),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        for (final field in report.fields)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: RichText(
+                              text: TextSpan(
+                                style: const TextStyle(fontSize: 12.5, height: 1.4),
+                                children: [
+                                  TextSpan(
+                                      text: '${field.key}: ',
+                                      style: TextStyle(color: Colors.grey[500])),
+                                  TextSpan(
+                                      text: field.value,
+                                      style: const TextStyle(color: Colors.white70)),
+                                ],
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
             ],
           ),
         ),
