@@ -652,6 +652,7 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
     HistoryStore.instance.addListener(_onChanged);
     SvReportStore.instance.addListener(_onChanged);
     StaffRosterStore.instance.addListener(_onChanged);
+    AssignedTaskStore.instance.addListener(_onChanged);
   }
 
   @override
@@ -660,6 +661,7 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
     HistoryStore.instance.removeListener(_onChanged);
     SvReportStore.instance.removeListener(_onChanged);
     StaffRosterStore.instance.removeListener(_onChanged);
+    AssignedTaskStore.instance.removeListener(_onChanged);
     super.dispose();
   }
 
@@ -686,6 +688,29 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
             e.reviewedAction == SuggestedAction.needsReschedule ||
             e.reviewedAction == SuggestedAction.escalate)
         .length;
+
+    // 「SVからのタスク」の未完了件数。新規購読は追加せず、既に購読済みの
+    // HistoryStore(自分が提出した報告。sourceTaskIdが紐づいた完了報告を含む)と
+    // AssignedTaskStore(自分に割り当てられた全タスク)を突き合わせて都度算出する。
+    final completedTaskIds = completedTaskIdsFrom(HistoryStore.instance.entries);
+    final incompleteTaskCount = AssignedTaskStore.instance.entries
+        .where((t) => !completedTaskIds.contains(t.id))
+        .length;
+
+    // ホーム画面のお知らせ・タスクセクションに表示するカード。該当件数が0のものは
+    // 含めない(カードごと非表示にするため)。
+    final noticeCards = <Widget>[
+      if (incompleteTaskCount > 0)
+        _HomeNoticeCard(
+          icon: Icons.assignment_ind_outlined,
+          iconColor: const Color(0xFFF97316),
+          title: 'SVからのタスク',
+          count: incompleteTaskCount,
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const AssignedTasksScreen()),
+          ),
+        ),
+    ];
 
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -727,6 +752,16 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
                   style: TextStyle(color: Colors.grey[400], fontSize: 15),
                 ),
               ),
+              // お知らせ・タスクなど、SVから届いた項目のセクション。今は「SVからの
+              // タスク」のみだが、将来お知らせ配信機能が実装された際もここに
+              // _HomeNoticeCardを1つ追加するだけで並べられる構造にしている
+              // (Columnにspacingを指定しているので、複数枚並んでも自然に間隔が空く)。
+              // 該当件数が0の項目はカードごと非表示にするため、noticeCardsが空の場合は
+              // セクション自体(前後の余白含め)を丸ごと出さない。
+              if (noticeCards.isNotEmpty) ...[
+                const SizedBox(height: 24),
+                Column(spacing: 12, children: noticeCards),
+              ],
               const SizedBox(height: 24),
               GridView.count(
                 shrinkWrap: true,
@@ -900,6 +935,58 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
             ],
           ),
         );
+  }
+}
+
+/// ホーム画面上部の「お知らせ・タスク」セクションで使う汎用カード。
+/// アイコン+タイトル+件数+タップ遷移、という共通の見た目を1箇所にまとめておくことで、
+/// 将来お知らせ配信機能が実装された際もこのウィジェットを1つ追加するだけで済むようにする。
+class _HomeNoticeCard extends StatelessWidget {
+  final IconData icon;
+  final Color iconColor;
+  final String title;
+  final int count;
+  final VoidCallback onTap;
+
+  const _HomeNoticeCard({
+    required this.icon,
+    required this.iconColor,
+    required this.title,
+    required this.count,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: const Color(0xFF141826),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: Colors.white10),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, color: iconColor, size: 22),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(title,
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+              ),
+              Text('$count件', style: TextStyle(color: Colors.grey[400], fontSize: 13)),
+              const SizedBox(width: 8),
+              const Icon(Icons.chevron_right, color: Colors.white38, size: 18),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -1451,6 +1538,7 @@ class HistoryEntry {
   final String? reviewedBy;
   final DateTime? reviewedAt;
   final SuggestedAction? reviewedAction;
+  final String? sourceTaskId;
 
   HistoryEntry({
     this.id,
@@ -1466,6 +1554,7 @@ class HistoryEntry {
     this.reviewedBy,
     this.reviewedAt,
     this.reviewedAction,
+    this.sourceTaskId,
   }) : timestamp = timestamp ?? DateTime.now();
 
   IconData get icon => categoryStyle(category).icon;
@@ -1484,6 +1573,9 @@ class HistoryEntry {
       'fields': fields.map((f) => {'label': f.key, 'value': f.value}).toList(),
       'history':
           history.map((m) => {'sender': m.sender.name, 'text': m.text}).toList(),
+      // 値がある時だけキーを含める。sourceTaskIdを使わない他5フローのドキュメントに
+      // 不要な `sourceTaskId: null` フィールドが付与されるのを避けるため。
+      if (sourceTaskId != null) 'sourceTaskId': sourceTaskId,
     };
   }
 
@@ -1504,6 +1596,7 @@ class HistoryEntry {
       reviewedAction: SuggestedAction.values
           .where((a) => a.name == data['reviewedAction'])
           .firstOrNull,
+      sourceTaskId: data['sourceTaskId'] as String?,
       action: SuggestedAction.values.firstWhere(
         (a) => a.name == data['action'],
         orElse: () => SuggestedAction.approveOnly,
@@ -1865,6 +1958,102 @@ class StaffRosterStore extends ChangeNotifier {
     _staffSub?.cancel();
     super.dispose();
   }
+}
+
+/// SVがスタッフへ割り当てたタスク(`tasks`コレクション)のクライアント用モデル。
+class AssignedTask {
+  final String id;
+  final String staffId;
+  final String assignedBy;
+  final String? assignedByName;
+  final String title;
+  final String detail;
+  final DateTime createdAt;
+
+  const AssignedTask({
+    required this.id,
+    required this.staffId,
+    required this.assignedBy,
+    this.assignedByName,
+    required this.title,
+    required this.detail,
+    required this.createdAt,
+  });
+
+  String get time => formatRelativeTime(createdAt);
+
+  factory AssignedTask.fromFirestore(String id, Map<String, dynamic> data) {
+    final ts = data['createdAt'];
+    return AssignedTask(
+      id: id,
+      staffId: data['staffId'] as String? ?? '',
+      assignedBy: data['assignedBy'] as String? ?? '',
+      assignedByName: data['assignedByName'] as String?,
+      title: data['title'] as String? ?? '',
+      detail: data['detail'] as String? ?? '',
+      createdAt: ts is Timestamp ? ts.toDate() : DateTime.now(),
+    );
+  }
+}
+
+/// ログイン中スタッフに割り当てられたタスクをリアルタイム購読するストア。
+/// `HistoryStore`と同型のパターン(authStateChanges()を直接見て、staffId一致で
+/// フィルタ購読する)を踏襲している。taskのstaffIdは常にスタッフのuidになる設計
+/// (AssignTaskScreenのスタッフ選択がSVの配下スタッフのみのため)なので、
+/// SvReportStoreのような「role==svの時だけ購読」というロール判定は不要。
+class AssignedTaskStore extends ChangeNotifier {
+  AssignedTaskStore._() {
+    _authSub = FirebaseAuth.instance.authStateChanges().listen(_onAuthChanged);
+  }
+  static final AssignedTaskStore instance = AssignedTaskStore._();
+
+  final _firestore = FirebaseFirestore.instance;
+  StreamSubscription<User?>? _authSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _entriesSub;
+  List<AssignedTask> _entries = [];
+
+  List<AssignedTask> get entries => List.unmodifiable(_entries);
+
+  void _onAuthChanged(User? user) {
+    _entriesSub?.cancel();
+    if (user == null) {
+      _entries = [];
+      notifyListeners();
+      return;
+    }
+    _entriesSub = _firestore
+        .collection('tasks')
+        .where('staffId', isEqualTo: user.uid)
+        .orderBy('createdAt', descending: true)
+        .snapshots()
+        .listen((snapshot) {
+      _entries = snapshot.docs
+          .map((doc) => AssignedTask.fromFirestore(doc.id, doc.data()))
+          .toList();
+      notifyListeners();
+    }, onError: (Object e, StackTrace st) {
+      debugPrint('[AssignedTaskStore] snapshot error: $e');
+    });
+  }
+
+  @override
+  void dispose() {
+    _authSub?.cancel();
+    _entriesSub?.cancel();
+    super.dispose();
+  }
+}
+
+/// sourceTaskIdが紐づいた「タスク完了」報告から、完了済みタスクIDの集合を求める。
+/// 「問い合わせ」(業務相談カテゴリ)もsourceTaskIdを持つが、これはタスクの完了を
+/// 意味しないため、category=='タスク完了'に限定して判定する。ホーム画面の未完了件数
+/// (_HomeTabBody)とタスク一覧(AssignedTasksScreen)の両方で使う共通ロジック。
+Set<String> completedTaskIdsFrom(List<HistoryEntry> entries) {
+  return entries
+      .where((e) => e.category == 'タスク完了')
+      .map((e) => e.sourceTaskId)
+      .whereType<String>()
+      .toSet();
 }
 
 class ChatInputBar extends StatelessWidget {
@@ -2723,7 +2912,12 @@ class _ConsultationData {
 }
 
 class ConsultationChatScreen extends StatefulWidget {
-  const ConsultationChatScreen({super.key});
+  /// タスク詳細画面の「問い合わせ」から遷移した場合に、どのタスクについての
+  /// 相談かを引き継ぐための任意パラメータ。
+  final String? sourceTaskId;
+  final String? sourceTaskTitle;
+
+  const ConsultationChatScreen({super.key, this.sourceTaskId, this.sourceTaskTitle});
   @override
   State<ConsultationChatScreen> createState() => _ConsultationChatScreenState();
 }
@@ -2745,6 +2939,9 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
   @override
   void initState() {
     super.initState();
+    if (widget.sourceTaskTitle != null) {
+      _addJarvis('「${widget.sourceTaskTitle}」についてのお問い合わせですね。');
+    }
     _addJarvis('お疲れ様です。どのジャンルのご相談ですか？');
     setState(() => _awaitingTopicChoice = true);
   }
@@ -2858,6 +3055,7 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
         MapEntry('緊急度', _data.urgency ?? '-'),
       ],
       history: List.unmodifiable(_messages),
+      sourceTaskId: widget.sourceTaskId,
     );
 
     await _submitEntry(entry);
@@ -2879,6 +3077,17 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
         _pendingEntry = null;
       });
       _addJarvis('ありがとうございます。内容を確認し、SVに共有しました。');
+      // タスク詳細画面の「問い合わせ」から遷移してきた場合は、TaskQuickCompleteScreen
+      // (完了報告)と同じく、少し間を置いてタスク一覧画面まで自動で戻る。
+      // 通常のホーム画面からの業務相談(sourceTaskIdなし)は、このままチャット画面に
+      // 留まる既存の挙動を変えない。
+      if (widget.sourceTaskId != null) {
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+        if (!mounted) return;
+        Navigator.of(context)
+          ..pop()
+          ..pop();
+      }
     } catch (_) {
       BeforeUnloadGuard.disable();
       if (!mounted) return;
@@ -4930,6 +5139,7 @@ class _AssignTaskScreenState extends State<AssignTaskScreen> {
       await FirebaseFirestore.instance.collection('tasks').add({
         'staffId': staff.uid,
         'assignedBy': uid,
+        'assignedByName': UserSession.instance.displayName,
         'title': title,
         'detail': detail,
         'createdAt': FieldValue.serverTimestamp(),
@@ -5067,6 +5277,427 @@ class _AssignTaskScreenState extends State<AssignTaskScreen> {
                       ),
                     ),
                     child: const Text('割り当てる', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// スタッフによるタスク確認(一覧・詳細、ホーム画面のカードから遷移)
+// ============================================================
+
+class AssignedTasksScreen extends StatefulWidget {
+  const AssignedTasksScreen({super.key});
+
+  @override
+  State<AssignedTasksScreen> createState() => _AssignedTasksScreenState();
+}
+
+class _AssignedTasksScreenState extends State<AssignedTasksScreen> {
+  @override
+  void initState() {
+    super.initState();
+    AssignedTaskStore.instance.addListener(_onChanged);
+    HistoryStore.instance.addListener(_onChanged);
+  }
+
+  @override
+  void dispose() {
+    AssignedTaskStore.instance.removeListener(_onChanged);
+    HistoryStore.instance.removeListener(_onChanged);
+    super.dispose();
+  }
+
+  void _onChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // ホーム画面の未完了件数と同じロジック(sourceTaskIdが紐づいた完了報告の集合)。
+    // この一覧は未完了のみを表示する(完了履歴はSV側の報告受領機能で参照する想定)。
+    final completedTaskIds = completedTaskIdsFrom(HistoryStore.instance.entries);
+    final tasks = AssignedTaskStore.instance.entries
+        .where((t) => !completedTaskIds.contains(t.id))
+        .toList();
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0E1A),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0A0E1A),
+        elevation: 0,
+        title: const Text('SVからのタスク', style: TextStyle(color: Colors.white, fontSize: 17)),
+        iconTheme: const IconThemeData(color: Colors.white70),
+      ),
+      body: SafeArea(
+        child: tasks.isEmpty
+            ? Center(
+                child: Text('未完了のタスクはありません。',
+                    style: TextStyle(color: Colors.grey[500], fontSize: 13)),
+              )
+            : ListView.builder(
+                padding: const EdgeInsets.all(16),
+                itemCount: tasks.length,
+                itemBuilder: (context, index) {
+                  final task = tasks[index];
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Material(
+                      color: Colors.transparent,
+                      borderRadius: BorderRadius.circular(16),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => AssignedTaskDetailScreen(task: task),
+                            ),
+                          );
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF141826),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: Colors.white10),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const CircleAvatar(
+                                radius: 20,
+                                backgroundColor: Color(0x33F97316),
+                                child: Icon(Icons.assignment_ind_outlined,
+                                    color: Colors.white, size: 18),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        const Text('タスク',
+                                            style: TextStyle(
+                                                color: Color(0xFFF97316),
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.bold)),
+                                        Text(task.time,
+                                            style: TextStyle(
+                                                color: Colors.grey[500], fontSize: 11)),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(task.title,
+                                        style: const TextStyle(
+                                            color: Colors.white, fontSize: 13.5, height: 1.3)),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                        '依頼者: ${task.assignedByName ?? shortStaffId(task.assignedBy)}',
+                                        style: TextStyle(
+                                            color: Colors.grey[600], fontSize: 11)),
+                                  ],
+                                ),
+                              ),
+                              const Icon(Icons.chevron_right, color: Colors.white24, size: 18),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+      ),
+    );
+  }
+}
+
+class AssignedTaskDetailScreen extends StatelessWidget {
+  final AssignedTask task;
+  const AssignedTaskDetailScreen({super.key, required this.task});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0E1A),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0A0E1A),
+        elevation: 0,
+        title: const Text('タスク詳細', style: TextStyle(color: Colors.white, fontSize: 17)),
+        iconTheme: const IconThemeData(color: Colors.white70),
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF141826),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white10),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const CircleAvatar(
+                          radius: 20,
+                          backgroundColor: Color(0x33F97316),
+                          child: Icon(Icons.assignment_ind_outlined,
+                              color: Colors.white, size: 18),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(task.title,
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text('依頼者: ${task.assignedByName ?? shortStaffId(task.assignedBy)}',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
+                    const SizedBox(height: 4),
+                    Text('受け取り: ${task.time}',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text('内容',
+                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF141826),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white10),
+                ),
+                child: Text(
+                  task.detail.isEmpty ? '(詳細の記載はありません)' : task.detail,
+                  style: const TextStyle(color: Colors.white70, fontSize: 13.5, height: 1.5),
+                ),
+              ),
+              const SizedBox(height: 24),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => ConsultationChatScreen(
+                              sourceTaskId: task.id,
+                              sourceTaskTitle: task.title,
+                            ),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.chat_bubble_outline, size: 18),
+                      label: const Text('問い合わせ'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        side: const BorderSide(color: Colors.white24),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => TaskQuickCompleteScreen(task: task),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.check_circle_outline, size: 18),
+                      label: const Text('完了'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.cyanAccent,
+                        foregroundColor: Colors.black,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// タスク詳細画面の「完了」ボタンから遷移する、シンプルな完了報告フォーム。
+/// 既存のTaskCompletionChatScreen(3問チャット)とは異なり、タスク内容は既知の
+/// ため聞き直さず、自由記載欄(任意)のみでワンタップ相当の軽い操作にしている。
+class TaskQuickCompleteScreen extends StatefulWidget {
+  final AssignedTask task;
+  const TaskQuickCompleteScreen({super.key, required this.task});
+
+  @override
+  State<TaskQuickCompleteScreen> createState() => _TaskQuickCompleteScreenState();
+}
+
+class _TaskQuickCompleteScreenState extends State<TaskQuickCompleteScreen> {
+  final TextEditingController _memoController = TextEditingController();
+  bool _isSaving = false;
+  bool _saveFailed = false;
+
+  @override
+  void dispose() {
+    _memoController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_isSaving) return; // 二重送信防止(SvSummaryScreen._decideと同じガード)
+    setState(() {
+      _isSaving = true;
+      _saveFailed = false;
+    });
+    final memo = _memoController.text.trim();
+    final entry = HistoryEntry(
+      id: generateReportId(),
+      category: 'タスク完了',
+      title: widget.task.title,
+      action: SuggestedAction.approveOnly,
+      fields: [
+        MapEntry('タスク', widget.task.title),
+        MapEntry('完了メモ', memo.isEmpty ? '(記載なし)' : memo),
+      ],
+      history: const [],
+      sourceTaskId: widget.task.id,
+    );
+    try {
+      await HistoryStore.instance.add(entry);
+      if (!mounted) return;
+      // 成功時はNavigatorで一覧に戻るまで_isSavingをtrueのままにしておく
+      // (SvSummaryScreen._decideと同じ)。ここでfalseに戻すと、自動遷移までの
+      // 間だけボタンが再度タップ可能になり、連打で二重送信されてしまう。
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('完了報告を送信しました。'),
+          backgroundColor: Color(0xFF141826),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      // スナックバーが見える程度の間を置いてから、タスク一覧画面まで自動で戻る
+      // (SvSummaryScreen._decideの成功時と同じパターン)。詳細画面→完了報告画面と
+      // 2つ進んだ状態なので、一覧まで戻るには2回popする。
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      if (!mounted) return;
+      Navigator.of(context)
+        ..pop()
+        ..pop();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+        _saveFailed = true;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0E1A),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0A0E1A),
+        elevation: 0,
+        title: const Text('タスク完了報告', style: TextStyle(color: Colors.white, fontSize: 17)),
+        iconTheme: const IconThemeData(color: Colors.white70),
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF141826),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white10),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('完了するタスク',
+                        style: TextStyle(
+                            color: Colors.grey, fontSize: 12, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 6),
+                    Text(widget.task.title,
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+              const Text('完了メモ(任意)',
+                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _memoController,
+                enabled: !_isSaving,
+                maxLines: 4,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  filled: true,
+                  fillColor: const Color(0xFF141826),
+                  hintText: '特記事項があれば入力してください(空欄でも送信できます)',
+                  hintStyle: TextStyle(color: Colors.grey[600]),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              if (_isSaving || _saveFailed)
+                _SubmitStatusBar(isSaving: _isSaving, onRetry: _submit)
+              else
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _submit,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.cyanAccent,
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: const Text('完了として報告する',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
                   ),
                 ),
             ],
