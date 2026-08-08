@@ -1093,7 +1093,11 @@ class _SvHomeTabBody extends StatelessWidget {
                 subtitle: '現在稼働中の\nスタッフを確認',
                 icon: Icons.people_outline,
                 color: const Color(0xFFA855F7),
-                onTap: () => showComingSoonDialog(context, '稼働確認'),
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const AttendanceOverviewScreen()),
+                  );
+                },
               ),
               CategoryCard(
                 title: 'スタッフ別管理',
