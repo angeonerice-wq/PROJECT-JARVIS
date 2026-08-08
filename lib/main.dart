@@ -648,19 +648,13 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
   @override
   void initState() {
     super.initState();
-    UserSession.instance.addListener(_onChanged);
     HistoryStore.instance.addListener(_onChanged);
-    SvReportStore.instance.addListener(_onChanged);
-    StaffRosterStore.instance.addListener(_onChanged);
     AssignedTaskStore.instance.addListener(_onChanged);
   }
 
   @override
   void dispose() {
-    UserSession.instance.removeListener(_onChanged);
     HistoryStore.instance.removeListener(_onChanged);
-    SvReportStore.instance.removeListener(_onChanged);
-    StaffRosterStore.instance.removeListener(_onChanged);
     AssignedTaskStore.instance.removeListener(_onChanged);
     super.dispose();
   }
@@ -671,15 +665,9 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
 
   @override
   Widget build(BuildContext context) {
-    final isSv = UserSession.instance.role == UserRole.sv;
-    final entries = isSv ? SvReportStore.instance.entries : HistoryStore.instance.entries;
+    final entries = HistoryStore.instance.entries;
     final todayEntries = entries.where((e) => _isToday(e.timestamp)).toList();
-    final totalStaffCount = StaffRosterStore.instance.staffCount;
 
-    final absentCount = todayEntries
-        .where((e) => e.category == '勤怠(欠勤)' || e.category == '勤怠(遅刻)')
-        .length;
-    final activeCount = (totalStaffCount - absentCount).clamp(0, totalStaffCount);
     final completedTaskCount =
         todayEntries.where((e) => e.category == 'タスク完了').length;
     final unreviewedCount = todayEntries.where((e) => e.reviewedAt == null).length;
@@ -890,42 +878,26 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
                             icon: Icons.people,
                             color: Colors.blueAccent,
                             label: '全体稼働',
-                            value: isSv ? '$activeCount/$totalStaffCount名' : '-',
-                            onTap: isSv
-                                ? () => Navigator.of(context).push(
-                                      MaterialPageRoute(
-                                          builder: (_) => const AttendanceOverviewScreen()),
-                                    )
-                                : null),
+                            value: '-',
+                            onTap: null),
                         StatItem(
                             icon: Icons.check_circle,
                             color: Colors.greenAccent,
                             label: '完了タスク',
                             value: '$completedTaskCount件',
-                            onTap: isSv
-                                ? () => Navigator.of(context).push(
-                                      MaterialPageRoute(
-                                          builder: (_) => const CompletedTasksScreen()),
-                                    )
-                                : null),
+                            onTap: null),
                         StatItem(
                             icon: Icons.warning_amber,
                             color: Colors.amber,
                             label: '未確認',
                             value: '$unreviewedCount件',
-                            onTap: isSv
-                                ? () => widget.onOpenSummaryTab
-                                    ?.call(SummaryReportTab.unreviewed)
-                                : null),
+                            onTap: null),
                         StatItem(
                             icon: Icons.error_outline,
                             color: Colors.redAccent,
                             label: '要対応',
                             value: '$needsActionCount件',
-                            onTap: isSv
-                                ? () => widget.onOpenSummaryTab
-                                    ?.call(SummaryReportTab.needsAction)
-                                : null),
+                            onTap: null),
                       ],
                     ),
                   ],
@@ -992,24 +964,62 @@ class _HomeNoticeCard extends StatelessWidget {
 
 /// SV専用のホーム画面。スタッフ向けの6カテゴリ報告カードの代わりに、
 /// SVの役割6項目(相談・報告受領/タスクを送る/既読・完了確認/お知らせ配信/
-/// 稼働確認/スタッフ別管理)へのナビゲーションを表示する。
-/// 実装済みなのは「相談・報告受領」(既存のサマリータブへ遷移)と
-/// 「タスクを送る」(既存のAssignTaskScreenへ遷移)のみで、残り4項目は
-/// 準備中プレースホルダー。
-class _SvHomeTabBody extends StatelessWidget {
+/// 稼働確認/スタッフ別管理)へのナビゲーションと、当日の集計サマリー
+/// (「本日の状況」カード。旧`_HomeTabBody`のisSv分岐から移植)を表示する。
+class _SvHomeTabBody extends StatefulWidget {
   final void Function(SummaryReportTab tab)? onOpenSummaryTab;
 
   const _SvHomeTabBody({this.onOpenSummaryTab});
 
   @override
+  State<_SvHomeTabBody> createState() => _SvHomeTabBodyState();
+}
+
+class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
+  @override
+  void initState() {
+    super.initState();
+    SvReportStore.instance.addListener(_onChanged);
+    StaffRosterStore.instance.addListener(_onChanged);
+  }
+
+  @override
+  void dispose() {
+    SvReportStore.instance.removeListener(_onChanged);
+    StaffRosterStore.instance.removeListener(_onChanged);
+    super.dispose();
+  }
+
+  void _onChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final todayEntries =
+        SvReportStore.instance.entries.where((e) => _isToday(e.timestamp)).toList();
+    final totalStaffCount = StaffRosterStore.instance.staffCount;
+
+    final absentCount = todayEntries
+        .where((e) => e.category == '勤怠(欠勤)' || e.category == '勤怠(遅刻)')
+        .length;
+    final activeCount = (totalStaffCount - absentCount).clamp(0, totalStaffCount);
+    final completedTaskCount =
+        todayEntries.where((e) => e.category == 'タスク完了').length;
+    final unreviewedCount = todayEntries.where((e) => e.reviewedAt == null).length;
+    final needsActionCount = todayEntries
+        .where((e) =>
+            e.reviewedAction == SuggestedAction.needsReschedule ||
+            e.reviewedAction == SuggestedAction.escalate)
+        .length;
+
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const SizedBox(height: 8),
-          _HomeHeaderBar(onOpenSummaryTab: onOpenSummaryTab),
+          _HomeHeaderBar(onOpenSummaryTab: widget.onOpenSummaryTab),
           const SizedBox(height: 24),
           const Center(
             child: JarvisLogo(size: 118),
@@ -1057,7 +1067,7 @@ class _SvHomeTabBody extends StatelessWidget {
                 subtitle: 'スタッフからの\n報告・相談を確認',
                 icon: Icons.inbox,
                 color: const Color(0xFF3B82F6),
-                onTap: () => onOpenSummaryTab?.call(SummaryReportTab.unreviewed),
+                onTap: () => widget.onOpenSummaryTab?.call(SummaryReportTab.unreviewed),
               ),
               CategoryCard(
                 title: 'タスクを送る',
@@ -1111,6 +1121,76 @@ class _SvHomeTabBody extends StatelessWidget {
                 },
               ),
             ],
+          ),
+          const SizedBox(height: 20),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF141826),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.white10),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text('本日の状況',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold)),
+                    Row(
+                      children: [
+                        Text('最終更新 09:30',
+                            style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+                        const SizedBox(width: 4),
+                        Icon(Icons.refresh, color: Colors.grey[500], size: 14),
+                      ],
+                    ),
+                  ],
+                ),
+                const Divider(color: Colors.white12, height: 24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    StatItem(
+                        icon: Icons.people,
+                        color: Colors.blueAccent,
+                        label: '全体稼働',
+                        value: '$activeCount/$totalStaffCount名',
+                        onTap: () => Navigator.of(context).push(
+                              MaterialPageRoute(
+                                  builder: (_) => const AttendanceOverviewScreen()),
+                            )),
+                    StatItem(
+                        icon: Icons.check_circle,
+                        color: Colors.greenAccent,
+                        label: '完了タスク',
+                        value: '$completedTaskCount件',
+                        onTap: () => Navigator.of(context).push(
+                              MaterialPageRoute(
+                                  builder: (_) => const CompletedTasksScreen()),
+                            )),
+                    StatItem(
+                        icon: Icons.warning_amber,
+                        color: Colors.amber,
+                        label: '未確認',
+                        value: '$unreviewedCount件',
+                        onTap: () =>
+                            widget.onOpenSummaryTab?.call(SummaryReportTab.unreviewed)),
+                    StatItem(
+                        icon: Icons.error_outline,
+                        color: Colors.redAccent,
+                        label: '要対応',
+                        value: '$needsActionCount件',
+                        onTap: () =>
+                            widget.onOpenSummaryTab?.call(SummaryReportTab.needsAction)),
+                  ],
+                ),
+              ],
+            ),
           ),
           const SizedBox(height: 24),
         ],
