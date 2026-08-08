@@ -1152,15 +1152,15 @@ class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
             childAspectRatio: 2.15,
             children: [
               CategoryCard(
-                title: '相談・報告受領',
-                subtitle: 'スタッフからの\n報告・相談を確認',
+                title: '相談・報告​受領',
+                titleFontSize: 14,
                 icon: Icons.inbox,
                 color: const Color(0xFF3B82F6),
                 onTap: () => widget.onOpenSummaryTab?.call(SummaryReportTab.unreviewed),
               ),
               CategoryCard(
-                title: 'タスクを送る',
-                subtitle: 'スタッフ個人へ\nタスクを割り当て',
+                title: 'タスク配信',
+                titleFontSize: 14,
                 icon: Icons.assignment_ind_outlined,
                 color: const Color(0xFFF97316),
                 onTap: () {
@@ -1170,8 +1170,8 @@ class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
                 },
               ),
               CategoryCard(
-                title: '既読・完了確認',
-                subtitle: '送信済みタスクの\n完了/問い合わせ状況',
+                title: '既読・完了​確認',
+                titleFontSize: 14,
                 icon: Icons.fact_check_outlined,
                 color: const Color(0xFF22C55E),
                 onTap: () {
@@ -1181,8 +1181,8 @@ class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
                 },
               ),
               CategoryCard(
-                title: 'お知らせ配信',
-                subtitle: '複数人・全員への\n一斉送信',
+                title: 'お知らせ​配信',
+                titleFontSize: 14,
                 icon: Icons.campaign_outlined,
                 color: const Color(0xFF06B6D4),
                 onTap: () {
@@ -1193,7 +1193,7 @@ class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
               ),
               CategoryCard(
                 title: '稼働確認',
-                subtitle: '現在稼働中の\nスタッフを確認',
+                titleFontSize: 14,
                 icon: Icons.people_outline,
                 color: const Color(0xFFA855F7),
                 onTap: () {
@@ -1203,8 +1203,8 @@ class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
                 },
               ),
               CategoryCard(
-                title: 'スタッフ別管理',
-                subtitle: 'スタッフごとの\n状況・履歴',
+                title: 'スタッフ別​管理',
+                titleFontSize: 14,
                 icon: Icons.manage_accounts_outlined,
                 color: const Color(0xFF64748B),
                 onTap: () {
@@ -1224,18 +1224,20 @@ class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
 
 class CategoryCard extends StatelessWidget {
   final String title;
-  final String subtitle;
+  final String? subtitle;
   final IconData icon;
   final Color color;
   final VoidCallback onTap;
+  final double titleFontSize;
 
   const CategoryCard({
     super.key,
     required this.title,
-    required this.subtitle,
+    this.subtitle,
     required this.icon,
     required this.color,
     required this.onTap,
+    this.titleFontSize = 16,
   });
 
   @override
@@ -1270,27 +1272,20 @@ class CategoryCard extends StatelessWidget {
                     Row(
                       children: [
                         Expanded(
-                          child: Text(
-                            title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
+                          child: _CategoryCardTitle(title: title, fontSize: titleFontSize),
                         ),
                         const Icon(Icons.chevron_right, color: Colors.white70, size: 18),
                       ],
                     ),
-                    const SizedBox(height: 3),
-                    Text(
-                      subtitle,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: Colors.white.withValues(alpha: 0.8), fontSize: 11, height: 1.3),
-                    ),
+                    if (subtitle != null) ...[
+                      const SizedBox(height: 3),
+                      Text(
+                        subtitle!,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: Colors.white.withValues(alpha: 0.8), fontSize: 11, height: 1.3),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -1298,6 +1293,36 @@ class CategoryCard extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// CategoryCardのタイトル表示。CJK文字は文字間のどこでも自動改行されうるため、
+/// 単純にmaxLines:2を指定するだけでは「幅に入るところまで詰めて折り返す」動きになり、
+/// 意味のある区切り位置(例:「相談・報告」/「受領」)と一致しない。
+/// titleにゼロ幅スペース(​)が含まれる場合、それを「2行に分けてよい唯一の
+/// 区切り位置」として扱い、区切られた各グループを別々のTextとしてWrapに渡す。
+/// Wrapは子を「幅が足りなければ丸ごと次の行に送る」ため、グループ内部で
+/// 文字単位に割れることがなく、幅に収まる時は隙間なく1行に並ぶ。
+/// (以前はTextPainterで事前に幅を計測して分岐を決めていたが、フォント読み込みが
+/// 完了する前の計測結果に基づいて分岐が固定されてしまい、読み込み完了後の実際の
+/// 描画とズレて見切れる問題があった。Wrapは通常のレイアウトパイプラインで
+/// 都度改行を決めるため、フォント読み込み完了後の再レイアウトにも正しく追従する)
+class _CategoryCardTitle extends StatelessWidget {
+  final String title;
+  final double fontSize;
+  const _CategoryCardTitle({required this.title, required this.fontSize});
+
+  @override
+  Widget build(BuildContext context) {
+    final style =
+        TextStyle(color: Colors.white, fontSize: fontSize, fontWeight: FontWeight.bold);
+    final groups = title.split('​').where((g) => g.isNotEmpty).toList();
+    return Wrap(
+      children: [
+        for (final group in groups)
+          Text(group, maxLines: 1, overflow: TextOverflow.ellipsis, softWrap: false, style: style),
+      ],
     );
   }
 }
@@ -1599,6 +1624,41 @@ class ChatBubble extends StatelessWidget {
           message.text,
           style: const TextStyle(color: Colors.white, fontSize: 14, height: 1.4),
         ),
+      ),
+    );
+  }
+}
+
+/// 各報告・相談チャット画面の先頭に表示する、その画面が何のためのものかを示す案内文。
+/// ホーム画面のCategoryCardの説明文(勤怠なら「欠勤・遅刻の連絡はこちら」等)と同じ
+/// 内容をチャット画面内向けの言い回しに変えたもの。
+class _ChatGuidanceBanner extends StatelessWidget {
+  final String text;
+  const _ChatGuidanceBanner({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFF141826),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white10),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline, color: Colors.grey[500], size: 16),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: TextStyle(color: Colors.grey[400], fontSize: 12.5, height: 1.4),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -2804,6 +2864,7 @@ class _AttendanceChatScreenState extends State<AttendanceChatScreen> {
       body: SafeArea(
         child: Column(
           children: [
+            const _ChatGuidanceBanner(text: 'ここは欠勤・遅刻の連絡用チャット欄です。'),
             Expanded(
               child: ListView.builder(
                 controller: _scrollController,
@@ -3159,6 +3220,7 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
       body: SafeArea(
         child: Column(
           children: [
+            const _ChatGuidanceBanner(text: 'ここは巡回・作業報告のチャット欄です。'),
             Expanded(
               child: ListView.builder(
                 controller: _scrollController,
@@ -3478,6 +3540,7 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
       body: SafeArea(
         child: Column(
           children: [
+            const _ChatGuidanceBanner(text: 'ここは業務に関する相談・確認のチャット欄です。'),
             Expanded(
               child: ListView.builder(
                 controller: _scrollController,
@@ -3820,6 +3883,7 @@ class _TaskCompletionChatScreenState extends State<TaskCompletionChatScreen> {
       body: SafeArea(
         child: Column(
           children: [
+            const _ChatGuidanceBanner(text: 'ここは業務・タスクの完了報告のチャット欄です。'),
             Expanded(
               child: ListView.builder(
                 controller: _scrollController,
@@ -4109,6 +4173,7 @@ class _OtherChatScreenState extends State<OtherChatScreen> {
       body: SafeArea(
         child: Column(
           children: [
+            const _ChatGuidanceBanner(text: 'ここは他のカテゴリに当てはまらないご連絡のチャット欄です。'),
             Expanded(
               child: ListView.builder(
                 controller: _scrollController,
@@ -4317,6 +4382,7 @@ class _AnnouncementChatScreenState extends State<AnnouncementChatScreen> {
       body: SafeArea(
         child: Column(
           children: [
+            const _ChatGuidanceBanner(text: 'ここは重要なお知らせの確認のチャット欄です。'),
             Expanded(
               child: ListView.builder(
                 controller: _scrollController,
