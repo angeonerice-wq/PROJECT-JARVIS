@@ -8190,6 +8190,11 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
       };
       if (action == SuggestedAction.approveOnly) {
         update['approvedAt'] = FieldValue.serverTimestamp();
+      } else {
+        // 承認済みの報告を後から再調整/エスカレーションに変更した場合、
+        // approvedAtが残ったままだと「承認済み」バッジと「要対応」タブの
+        // 両方に矛盾して現れてしまうため、明示的にクリアする。
+        update['approvedAt'] = FieldValue.delete();
       }
       try {
         // オフライン時、Firestoreは書き込みをキューイングして待ち続け例外を投げないため、
