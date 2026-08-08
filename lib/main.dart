@@ -650,12 +650,14 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
     super.initState();
     HistoryStore.instance.addListener(_onChanged);
     AssignedTaskStore.instance.addListener(_onChanged);
+    ReceivedAnnouncementStore.instance.addListener(_onChanged);
   }
 
   @override
   void dispose() {
     HistoryStore.instance.removeListener(_onChanged);
     AssignedTaskStore.instance.removeListener(_onChanged);
+    ReceivedAnnouncementStore.instance.removeListener(_onChanged);
     super.dispose();
   }
 
@@ -685,6 +687,12 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
         .where((t) => !completedTaskIds.contains(t.id))
         .length;
 
+    // お知らせの未確認件数。confirmedAtがannouncementsドキュメント自身に
+    // 直接持たせてあるため、タスクのような報告横断集計は不要。
+    final unconfirmedAnnouncementCount = ReceivedAnnouncementStore.instance.entries
+        .where((a) => !a.isConfirmed)
+        .length;
+
     // ホーム画面のお知らせ・タスクセクションに表示するカード。該当件数が0のものは
     // 含めない(カードごと非表示にするため)。
     final noticeCards = <Widget>[
@@ -696,6 +704,16 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
           count: incompleteTaskCount,
           onTap: () => Navigator.of(context).push(
             MaterialPageRoute(builder: (_) => const AssignedTasksScreen()),
+          ),
+        ),
+      if (unconfirmedAnnouncementCount > 0)
+        _HomeNoticeCard(
+          icon: Icons.campaign_outlined,
+          iconColor: const Color(0xFF06B6D4),
+          title: 'SVからのお知らせ',
+          count: unconfirmedAnnouncementCount,
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const AnnouncementsScreen()),
           ),
         ),
     ];
@@ -740,10 +758,10 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
                   style: TextStyle(color: Colors.grey[400], fontSize: 15),
                 ),
               ),
-              // お知らせ・タスクなど、SVから届いた項目のセクション。今は「SVからの
-              // タスク」のみだが、将来お知らせ配信機能が実装された際もここに
-              // _HomeNoticeCardを1つ追加するだけで並べられる構造にしている
-              // (Columnにspacingを指定しているので、複数枚並んでも自然に間隔が空く)。
+              // お知らせ・タスクなど、SVから届いた項目のセクション。「SVからのタスク」
+              // 「SVからのお知らせ」のように_HomeNoticeCardを1つ追加するだけで
+              // 並べられる構造にしている(Columnにspacingを指定しているので、
+              // 複数枚並んでも自然に間隔が空く)。
               // 該当件数が0の項目はカードごと非表示にするため、noticeCardsが空の場合は
               // セクション自体(前後の余白含め)を丸ごと出さない。
               if (noticeCards.isNotEmpty) ...[
@@ -912,7 +930,8 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
 
 /// ホーム画面上部の「お知らせ・タスク」セクションで使う汎用カード。
 /// アイコン+タイトル+件数+タップ遷移、という共通の見た目を1箇所にまとめておくことで、
-/// 将来お知らせ配信機能が実装された際もこのウィジェットを1つ追加するだけで済むようにする。
+/// 新しい通知種別が増えてもこのウィジェットを1つ追加するだけで済むようにする
+/// (現在は「SVからのタスク」「SVからのお知らせ」の2種)。
 class _HomeNoticeCard extends StatelessWidget {
   final IconData icon;
   final Color iconColor;
@@ -1054,75 +1073,6 @@ class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
             ),
           ),
           const SizedBox(height: 24),
-          GridView.count(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            crossAxisCount: 2,
-            crossAxisSpacing: 12,
-            mainAxisSpacing: 12,
-            childAspectRatio: 2.15,
-            children: [
-              CategoryCard(
-                title: '相談・報告受領',
-                subtitle: 'スタッフからの\n報告・相談を確認',
-                icon: Icons.inbox,
-                color: const Color(0xFF3B82F6),
-                onTap: () => widget.onOpenSummaryTab?.call(SummaryReportTab.unreviewed),
-              ),
-              CategoryCard(
-                title: 'タスクを送る',
-                subtitle: 'スタッフ個人へ\nタスクを割り当て',
-                icon: Icons.assignment_ind_outlined,
-                color: const Color(0xFFF97316),
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => const AssignTaskScreen()),
-                  );
-                },
-              ),
-              CategoryCard(
-                title: '既読・完了確認',
-                subtitle: '送信済みタスクの\n完了/問い合わせ状況',
-                icon: Icons.fact_check_outlined,
-                color: const Color(0xFF22C55E),
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => const SentTasksScreen()),
-                  );
-                },
-              ),
-              CategoryCard(
-                title: 'お知らせ配信',
-                subtitle: '複数人・全員への\n一斉送信',
-                icon: Icons.campaign_outlined,
-                color: const Color(0xFF06B6D4),
-                onTap: () => showComingSoonDialog(context, 'お知らせ配信'),
-              ),
-              CategoryCard(
-                title: '稼働確認',
-                subtitle: '現在稼働中の\nスタッフを確認',
-                icon: Icons.people_outline,
-                color: const Color(0xFFA855F7),
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => const AttendanceOverviewScreen()),
-                  );
-                },
-              ),
-              CategoryCard(
-                title: 'スタッフ別管理',
-                subtitle: 'スタッフごとの\n状況・履歴',
-                icon: Icons.manage_accounts_outlined,
-                color: const Color(0xFF64748B),
-                onTap: () {
-                  Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => const StaffManagementListScreen()),
-                  );
-                },
-              ),
-            ],
-          ),
-          const SizedBox(height: 20),
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -1191,6 +1141,79 @@ class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
                 ),
               ],
             ),
+          ),
+          const SizedBox(height: 24),
+          GridView.count(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            crossAxisCount: 2,
+            crossAxisSpacing: 12,
+            mainAxisSpacing: 12,
+            childAspectRatio: 2.15,
+            children: [
+              CategoryCard(
+                title: '相談・報告受領',
+                subtitle: 'スタッフからの\n報告・相談を確認',
+                icon: Icons.inbox,
+                color: const Color(0xFF3B82F6),
+                onTap: () => widget.onOpenSummaryTab?.call(SummaryReportTab.unreviewed),
+              ),
+              CategoryCard(
+                title: 'タスクを送る',
+                subtitle: 'スタッフ個人へ\nタスクを割り当て',
+                icon: Icons.assignment_ind_outlined,
+                color: const Color(0xFFF97316),
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const AssignTaskScreen()),
+                  );
+                },
+              ),
+              CategoryCard(
+                title: '既読・完了確認',
+                subtitle: '送信済みタスクの\n完了/問い合わせ状況',
+                icon: Icons.fact_check_outlined,
+                color: const Color(0xFF22C55E),
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const SentTasksScreen()),
+                  );
+                },
+              ),
+              CategoryCard(
+                title: 'お知らせ配信',
+                subtitle: '複数人・全員への\n一斉送信',
+                icon: Icons.campaign_outlined,
+                color: const Color(0xFF06B6D4),
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const AnnouncementSendScreen()),
+                  );
+                },
+              ),
+              CategoryCard(
+                title: '稼働確認',
+                subtitle: '現在稼働中の\nスタッフを確認',
+                icon: Icons.people_outline,
+                color: const Color(0xFFA855F7),
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const AttendanceOverviewScreen()),
+                  );
+                },
+              ),
+              CategoryCard(
+                title: 'スタッフ別管理',
+                subtitle: 'スタッフごとの\n状況・履歴',
+                icon: Icons.manage_accounts_outlined,
+                color: const Color(0xFF64748B),
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const StaffManagementListScreen()),
+                  );
+                },
+              ),
+            ],
           ),
           const SizedBox(height: 24),
         ],
@@ -1631,6 +1654,7 @@ class HistoryEntry {
   final DateTime? reviewedAt;
   final SuggestedAction? reviewedAction;
   final String? sourceTaskId;
+  final String? announcementId;
 
   HistoryEntry({
     this.id,
@@ -1647,6 +1671,7 @@ class HistoryEntry {
     this.reviewedAt,
     this.reviewedAction,
     this.sourceTaskId,
+    this.announcementId,
   }) : timestamp = timestamp ?? DateTime.now();
 
   IconData get icon => categoryStyle(category).icon;
@@ -1665,9 +1690,10 @@ class HistoryEntry {
       'fields': fields.map((f) => {'label': f.key, 'value': f.value}).toList(),
       'history':
           history.map((m) => {'sender': m.sender.name, 'text': m.text}).toList(),
-      // 値がある時だけキーを含める。sourceTaskIdを使わない他5フローのドキュメントに
-      // 不要な `sourceTaskId: null` フィールドが付与されるのを避けるため。
+      // 値がある時だけキーを含める。sourceTaskId/announcementIdを使わないフローの
+      // ドキュメントに不要な `null` フィールドが付与されるのを避けるため。
       if (sourceTaskId != null) 'sourceTaskId': sourceTaskId,
+      if (announcementId != null) 'announcementId': announcementId,
     };
   }
 
@@ -1689,6 +1715,7 @@ class HistoryEntry {
           .where((a) => a.name == data['reviewedAction'])
           .firstOrNull,
       sourceTaskId: data['sourceTaskId'] as String?,
+      announcementId: data['announcementId'] as String?,
       action: SuggestedAction.values.firstWhere(
         (a) => a.name == data['action'],
         orElse: () => SuggestedAction.approveOnly,
@@ -2183,6 +2210,140 @@ class SentTaskStore extends ChangeNotifier {
   }
 }
 
+// ============================================================
+// SVによるお知らせ配信(タスクとは別コレクション。完了/問い合わせの概念を持たず、
+// 「確認済みかどうか」はannouncementsドキュメント自身のconfirmedAtで直接管理する)
+// ============================================================
+
+class Announcement {
+  final String id;
+  final String staffId;
+  final String sentBy;
+  final String? sentByName;
+  final String title;
+  final String body;
+  final DateTime createdAt;
+  final DateTime? confirmedAt;
+
+  const Announcement({
+    required this.id,
+    required this.staffId,
+    required this.sentBy,
+    this.sentByName,
+    required this.title,
+    required this.body,
+    required this.createdAt,
+    this.confirmedAt,
+  });
+
+  String get time => formatRelativeTime(createdAt);
+  bool get isConfirmed => confirmedAt != null;
+
+  factory Announcement.fromFirestore(String id, Map<String, dynamic> data) {
+    final ts = data['createdAt'];
+    final confirmedTs = data['confirmedAt'];
+    return Announcement(
+      id: id,
+      staffId: data['staffId'] as String? ?? '',
+      sentBy: data['sentBy'] as String? ?? '',
+      sentByName: data['sentByName'] as String?,
+      title: data['title'] as String? ?? '',
+      body: data['body'] as String? ?? '',
+      createdAt: ts is Timestamp ? ts.toDate() : DateTime.now(),
+      confirmedAt: confirmedTs is Timestamp ? confirmedTs.toDate() : null,
+    );
+  }
+}
+
+/// ログイン中スタッフ宛のお知らせをリアルタイム購読するストア。AssignedTaskStoreと同型。
+class ReceivedAnnouncementStore extends ChangeNotifier {
+  ReceivedAnnouncementStore._() {
+    _authSub = FirebaseAuth.instance.authStateChanges().listen(_onAuthChanged);
+  }
+  static final ReceivedAnnouncementStore instance = ReceivedAnnouncementStore._();
+
+  final _firestore = FirebaseFirestore.instance;
+  StreamSubscription<User?>? _authSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _entriesSub;
+  List<Announcement> _entries = [];
+
+  List<Announcement> get entries => List.unmodifiable(_entries);
+
+  void _onAuthChanged(User? user) {
+    _entriesSub?.cancel();
+    if (user == null) {
+      _entries = [];
+      notifyListeners();
+      return;
+    }
+    _entriesSub = _firestore
+        .collection('announcements')
+        .where('staffId', isEqualTo: user.uid)
+        .orderBy('createdAt', descending: true)
+        .snapshots()
+        .listen((snapshot) {
+      _entries = snapshot.docs
+          .map((doc) => Announcement.fromFirestore(doc.id, doc.data()))
+          .toList();
+      notifyListeners();
+    }, onError: (Object e, StackTrace st) {
+      debugPrint('[ReceivedAnnouncementStore] snapshot error: $e');
+    });
+  }
+
+  @override
+  void dispose() {
+    _authSub?.cancel();
+    _entriesSub?.cancel();
+    super.dispose();
+  }
+}
+
+/// SVが自分自身で送信した(sentBy==自分uid)お知らせをリアルタイム購読するストア。
+/// SentTaskStoreと同じ構造。
+class SentAnnouncementStore extends ChangeNotifier {
+  SentAnnouncementStore._() {
+    _authSub = FirebaseAuth.instance.authStateChanges().listen(_onAuthChanged);
+  }
+  static final SentAnnouncementStore instance = SentAnnouncementStore._();
+
+  final _firestore = FirebaseFirestore.instance;
+  StreamSubscription<User?>? _authSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _entriesSub;
+  List<Announcement> _entries = [];
+
+  List<Announcement> get entries => List.unmodifiable(_entries);
+
+  void _onAuthChanged(User? user) {
+    _entriesSub?.cancel();
+    if (user == null) {
+      _entries = [];
+      notifyListeners();
+      return;
+    }
+    _entriesSub = _firestore
+        .collection('announcements')
+        .where('sentBy', isEqualTo: user.uid)
+        .orderBy('createdAt', descending: true)
+        .snapshots()
+        .listen((snapshot) {
+      _entries = snapshot.docs
+          .map((doc) => Announcement.fromFirestore(doc.id, doc.data()))
+          .toList();
+      notifyListeners();
+    }, onError: (Object e, StackTrace st) {
+      debugPrint('[SentAnnouncementStore] snapshot error: $e');
+    });
+  }
+
+  @override
+  void dispose() {
+    _authSub?.cancel();
+    _entriesSub?.cancel();
+    super.dispose();
+  }
+}
+
 /// sourceTaskIdが紐づいた報告(タスク完了・業務相談など)を、タスクIDごとに
 /// グルーピングする。1つのタスクに完了報告と問い合わせの両方が紐づくこともあるため、
 /// 単純な真偽値ではなくリストで持たせておき、呼び出し側で必要なカテゴリだけを
@@ -2224,6 +2385,19 @@ int monthlyCategoryCountForStaff(
         e.timestamp.year == now.year &&
         e.timestamp.month == now.month;
   }).length;
+}
+
+/// announcementIdが紐づいた報告(問い合わせ=業務相談)を、お知らせIDごとに
+/// グルーピングする。taskLinkedReportsFromと同じ考え方だが、お知らせの確認済み状態は
+/// announcementsドキュメント自身のconfirmedAtで持つため、ここでは問い合わせの有無判定のみに使う。
+Map<String, List<HistoryEntry>> announcementLinkedReportsFrom(List<HistoryEntry> entries) {
+  final map = <String, List<HistoryEntry>>{};
+  for (final e in entries) {
+    final announcementId = e.announcementId;
+    if (announcementId == null) continue;
+    map.putIfAbsent(announcementId, () => []).add(e);
+  }
+  return map;
 }
 
 class ChatInputBar extends StatelessWidget {
@@ -3087,7 +3261,18 @@ class ConsultationChatScreen extends StatefulWidget {
   final String? sourceTaskId;
   final String? sourceTaskTitle;
 
-  const ConsultationChatScreen({super.key, this.sourceTaskId, this.sourceTaskTitle});
+  /// お知らせ詳細画面の「問い合わせ」から遷移した場合に、どのお知らせについての
+  /// 相談かを引き継ぐための任意パラメータ(sourceTaskId/sourceTaskTitleと同じ形)。
+  final String? sourceAnnouncementId;
+  final String? sourceAnnouncementTitle;
+
+  const ConsultationChatScreen({
+    super.key,
+    this.sourceTaskId,
+    this.sourceTaskTitle,
+    this.sourceAnnouncementId,
+    this.sourceAnnouncementTitle,
+  });
   @override
   State<ConsultationChatScreen> createState() => _ConsultationChatScreenState();
 }
@@ -3111,6 +3296,8 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
     super.initState();
     if (widget.sourceTaskTitle != null) {
       _addJarvis('「${widget.sourceTaskTitle}」についてのお問い合わせですね。');
+    } else if (widget.sourceAnnouncementTitle != null) {
+      _addJarvis('「${widget.sourceAnnouncementTitle}」についてのお問い合わせですね。');
     }
     _addJarvis('お疲れ様です。どのジャンルのご相談ですか？');
     setState(() => _awaitingTopicChoice = true);
@@ -3226,6 +3413,7 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
       ],
       history: List.unmodifiable(_messages),
       sourceTaskId: widget.sourceTaskId,
+      announcementId: widget.sourceAnnouncementId,
     );
 
     await _submitEntry(entry);
@@ -3247,11 +3435,11 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
         _pendingEntry = null;
       });
       _addJarvis('ありがとうございます。内容を確認し、SVに共有しました。');
-      // タスク詳細画面の「問い合わせ」から遷移してきた場合は、TaskQuickCompleteScreen
-      // (完了報告)と同じく、少し間を置いてタスク一覧画面まで自動で戻る。
-      // 通常のホーム画面からの業務相談(sourceTaskIdなし)は、このままチャット画面に
+      // タスク詳細画面/お知らせ詳細画面の「問い合わせ」から遷移してきた場合は、
+      // TaskQuickCompleteScreen(完了報告)と同じく、少し間を置いて一覧画面まで自動で戻る。
+      // 通常のホーム画面からの業務相談(どちらの紐づけもなし)は、このままチャット画面に
       // 留まる既存の挙動を変えない。
-      if (widget.sourceTaskId != null) {
+      if (widget.sourceTaskId != null || widget.sourceAnnouncementId != null) {
         await Future<void>.delayed(const Duration(milliseconds: 700));
         if (!mounted) return;
         Navigator.of(context)
@@ -5484,6 +5672,252 @@ class _AssignTaskScreenState extends State<AssignTaskScreen> {
 }
 
 // ============================================================
+// SVによるお知らせ配信(SVメニューの④カードから遷移)
+// AssignTaskScreenと同じ複数選択+WriteBatchパターンをannouncementsコレクション向けに
+// 複製したもの。完了/問い合わせの概念がないため送信後の確認画面は無く、代わりに
+// AppBarから送信済みお知らせの確認状況一覧(SentAnnouncementsScreen)に遷移できる。
+// ============================================================
+
+class AnnouncementSendScreen extends StatefulWidget {
+  const AnnouncementSendScreen({super.key});
+
+  @override
+  State<AnnouncementSendScreen> createState() => _AnnouncementSendScreenState();
+}
+
+class _AnnouncementSendScreenState extends State<AnnouncementSendScreen> {
+  final TextEditingController _titleController = TextEditingController();
+  final TextEditingController _bodyController = TextEditingController();
+  final Set<String> _selectedStaffIds = {};
+  bool _sendToEveryone = false;
+  bool _isSaving = false;
+  bool _saveFailed = false;
+  String? _validationError;
+
+  @override
+  void initState() {
+    super.initState();
+    StaffRosterStore.instance.addListener(_onRosterChanged);
+  }
+
+  @override
+  void dispose() {
+    StaffRosterStore.instance.removeListener(_onRosterChanged);
+    _titleController.dispose();
+    _bodyController.dispose();
+    super.dispose();
+  }
+
+  void _onRosterChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _submit() async {
+    final roster = StaffRosterStore.instance.staff;
+    final targets = _sendToEveryone
+        ? roster
+        : roster.where((s) => _selectedStaffIds.contains(s.uid)).toList();
+    final title = _titleController.text.trim();
+    final body = _bodyController.text.trim();
+    if (targets.isEmpty || title.isEmpty) {
+      setState(() => _validationError = '送信先スタッフとタイトルは必須です。');
+      return;
+    }
+
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    setState(() {
+      _isSaving = true;
+      _saveFailed = false;
+      _validationError = null;
+    });
+    try {
+      final batch = FirebaseFirestore.instance.batch();
+      for (final staff in targets) {
+        final ref = FirebaseFirestore.instance.collection('announcements').doc();
+        batch.set(ref, {
+          'staffId': staff.uid,
+          'sentBy': uid,
+          'sentByName': UserSession.instance.displayName,
+          'title': title,
+          'body': body,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit().timeout(const Duration(seconds: 10));
+      if (!mounted) return;
+      setState(() => _isSaving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(targets.length == 1
+              ? '${targets.first.displayName ?? shortStaffId(targets.first.uid)}さんにお知らせを送信しました。'
+              : '${targets.length}名にお知らせを送信しました。'),
+          backgroundColor: const Color(0xFF141826),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      Navigator.of(context).pop();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isSaving = false;
+        _saveFailed = true;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final staff = StaffRosterStore.instance.staff;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0E1A),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0A0E1A),
+        elevation: 0,
+        title: const Text('お知らせ配信', style: TextStyle(color: Colors.white, fontSize: 17)),
+        iconTheme: const IconThemeData(color: Colors.white70),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.history, color: Colors.white70),
+            tooltip: '送信済みお知らせの確認状況',
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const SentAnnouncementsScreen()),
+              );
+            },
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('送信先スタッフ',
+                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              if (staff.isEmpty)
+                Text('配下スタッフが見つかりません。', style: TextStyle(color: Colors.grey[500], fontSize: 12.5))
+              else
+                Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF141826),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.white10),
+                  ),
+                  child: Column(
+                    children: [
+                      CheckboxListTile(
+                        value: _sendToEveryone,
+                        title: Text('全員に送信(${staff.length}名)',
+                            style: const TextStyle(color: Colors.white, fontSize: 14)),
+                        activeColor: Colors.cyanAccent,
+                        checkColor: Colors.black,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        onChanged: _isSaving
+                            ? null
+                            : (v) => setState(() {
+                                  _sendToEveryone = v ?? false;
+                                  _validationError = null;
+                                }),
+                      ),
+                      const Divider(height: 1, color: Colors.white10),
+                      ...staff.map((s) => CheckboxListTile(
+                            value: _sendToEveryone || _selectedStaffIds.contains(s.uid),
+                            title: Text(s.displayName ?? shortStaffId(s.uid),
+                                style: const TextStyle(color: Colors.white, fontSize: 14)),
+                            activeColor: Colors.cyanAccent,
+                            checkColor: Colors.black,
+                            controlAffinity: ListTileControlAffinity.leading,
+                            onChanged: (_isSaving || _sendToEveryone)
+                                ? null
+                                : (v) => setState(() {
+                                      if (v == true) {
+                                        _selectedStaffIds.add(s.uid);
+                                      } else {
+                                        _selectedStaffIds.remove(s.uid);
+                                      }
+                                      _validationError = null;
+                                    }),
+                          )),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 20),
+              const Text('タイトル',
+                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _titleController,
+                enabled: !_isSaving,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  filled: true,
+                  fillColor: const Color(0xFF141826),
+                  hintText: '例:勤怠報告の締め切り時刻変更について',
+                  hintStyle: TextStyle(color: Colors.grey[600]),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              const Text('本文',
+                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _bodyController,
+                enabled: !_isSaving,
+                maxLines: 4,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  filled: true,
+                  fillColor: const Color(0xFF141826),
+                  hintText: 'お知らせの内容を入力してください',
+                  hintStyle: TextStyle(color: Colors.grey[600]),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+              if (_validationError != null) ...[
+                const SizedBox(height: 12),
+                Text(_validationError!,
+                    style: const TextStyle(color: Color(0xFFEF4444), fontSize: 12.5)),
+              ],
+              const SizedBox(height: 24),
+              if (_isSaving || _saveFailed)
+                _SubmitStatusBar(isSaving: _isSaving, onRetry: _submit)
+              else
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _submit,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.cyanAccent,
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: const Text('送信する', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================
 // スタッフによるタスク確認(一覧・詳細、ホーム画面のカードから遷移)
 // ============================================================
 
@@ -5905,6 +6339,365 @@ class _TaskQuickCompleteScreenState extends State<TaskQuickCompleteScreen> {
 }
 
 // ============================================================
+// スタッフによるお知らせ確認(一覧・詳細、ホーム画面の通知カードから遷移)
+// ============================================================
+
+class AnnouncementsScreen extends StatefulWidget {
+  const AnnouncementsScreen({super.key});
+
+  @override
+  State<AnnouncementsScreen> createState() => _AnnouncementsScreenState();
+}
+
+class _AnnouncementsScreenState extends State<AnnouncementsScreen> {
+  @override
+  void initState() {
+    super.initState();
+    ReceivedAnnouncementStore.instance.addListener(_onChanged);
+  }
+
+  @override
+  void dispose() {
+    ReceivedAnnouncementStore.instance.removeListener(_onChanged);
+    super.dispose();
+  }
+
+  void _onChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final announcements = ReceivedAnnouncementStore.instance.entries;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0E1A),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0A0E1A),
+        elevation: 0,
+        title: const Text('SVからのお知らせ', style: TextStyle(color: Colors.white, fontSize: 17)),
+        iconTheme: const IconThemeData(color: Colors.white70),
+      ),
+      body: SafeArea(
+        child: announcements.isEmpty
+            ? Center(
+                child: Text('お知らせはありません。',
+                    style: TextStyle(color: Colors.grey[500], fontSize: 13)),
+              )
+            : ListView.builder(
+                padding: const EdgeInsets.all(16),
+                itemCount: announcements.length,
+                itemBuilder: (context, index) {
+                  final announcement = announcements[index];
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Material(
+                      color: Colors.transparent,
+                      borderRadius: BorderRadius.circular(16),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  AnnouncementDetailScreen(announcement: announcement),
+                            ),
+                          );
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF141826),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: Colors.white10),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const CircleAvatar(
+                                radius: 20,
+                                backgroundColor: Color(0x3306B6D4),
+                                child: Icon(Icons.campaign_outlined,
+                                    color: Colors.white, size: 18),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        const Text('お知らせ',
+                                            style: TextStyle(
+                                                color: Color(0xFF06B6D4),
+                                                fontSize: 12,
+                                                fontWeight: FontWeight.bold)),
+                                        Text(announcement.time,
+                                            style: TextStyle(
+                                                color: Colors.grey[500], fontSize: 11)),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(announcement.title,
+                                        style: const TextStyle(
+                                            color: Colors.white, fontSize: 13.5, height: 1.3)),
+                                    const SizedBox(height: 8),
+                                    _AnnouncementStatusChip(
+                                        isConfirmed: announcement.isConfirmed),
+                                  ],
+                                ),
+                              ),
+                              const Icon(Icons.chevron_right, color: Colors.white24, size: 18),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+      ),
+    );
+  }
+}
+
+class _AnnouncementStatusChip extends StatelessWidget {
+  final bool isConfirmed;
+  const _AnnouncementStatusChip({required this.isConfirmed});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isConfirmed ? const Color(0xFF22C55E) : Colors.grey[500]!;
+    final icon = isConfirmed ? Icons.check_circle : Icons.mark_email_unread_outlined;
+    final label = isConfirmed ? '確認済み' : '未確認';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: isConfirmed ? color.withValues(alpha: 0.15) : Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: isConfirmed ? 0.5 : 0.6)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 4),
+          Text(label, style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.bold)),
+        ],
+      ),
+    );
+  }
+}
+
+class AnnouncementDetailScreen extends StatefulWidget {
+  final Announcement announcement;
+  const AnnouncementDetailScreen({super.key, required this.announcement});
+
+  @override
+  State<AnnouncementDetailScreen> createState() => _AnnouncementDetailScreenState();
+}
+
+class _AnnouncementDetailScreenState extends State<AnnouncementDetailScreen> {
+  bool _isConfirming = false;
+  bool _confirmFailed = false;
+  DateTime? _confirmedAtOverride;
+
+  Future<void> _confirm() async {
+    if (_isConfirming) return; // 二重送信防止
+    setState(() {
+      _isConfirming = true;
+      _confirmFailed = false;
+    });
+    try {
+      await FirebaseFirestore.instance
+          .collection('announcements')
+          .doc(widget.announcement.id)
+          .update({'confirmedAt': FieldValue.serverTimestamp()})
+          .timeout(const Duration(seconds: 10));
+      if (!mounted) return;
+      // 成功時はNavigatorで一覧に戻るまで_isConfirmingをtrueのままにしておく
+      // (TaskQuickCompleteScreen._submitと同じ)。ここでfalseに戻すと、自動遷移までの
+      // 間だけボタンが再度タップ可能になり、連打で二重送信されてしまう。
+      setState(() => _confirmedAtOverride = DateTime.now());
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('確認しました。'),
+          backgroundColor: Color(0xFF141826),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      // スナックバーが見える程度の間を置いてから、一覧画面まで自動で戻る
+      // (TaskQuickCompleteScreen._submitの成功時と同じパターン)。
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      if (!mounted) return;
+      Navigator.of(context).pop();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isConfirming = false;
+        _confirmFailed = true;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final announcement = widget.announcement;
+    // confirmedAtはFirestore側の更新がReceivedAnnouncementStore経由で反映されるが、
+    // この画面はwidget.announcementのスナップショットを保持したままなので、確認直後は
+    // _confirmedAtOverrideで見た目を即時反映する(_SvSummaryScreenの_decisionと同じ考え方)。
+    final isConfirmed = _confirmedAtOverride != null || announcement.isConfirmed;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0E1A),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0A0E1A),
+        elevation: 0,
+        title: const Text('お知らせ詳細', style: TextStyle(color: Colors.white, fontSize: 17)),
+        iconTheme: const IconThemeData(color: Colors.white70),
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF141826),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white10),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const CircleAvatar(
+                          radius: 20,
+                          backgroundColor: Color(0x3306B6D4),
+                          child: Icon(Icons.campaign_outlined, color: Colors.white, size: 18),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(announcement.title,
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                        '送信者: ${announcement.sentByName ?? shortStaffId(announcement.sentBy)}',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
+                    const SizedBox(height: 4),
+                    Text('受け取り: ${announcement.time}',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text('内容',
+                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF141826),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white10),
+                ),
+                child: Text(
+                  announcement.body.isEmpty ? '(本文の記載はありません)' : announcement.body,
+                  style: const TextStyle(color: Colors.white70, fontSize: 13.5, height: 1.5),
+                ),
+              ),
+              const SizedBox(height: 24),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => ConsultationChatScreen(
+                              sourceAnnouncementId: announcement.id,
+                              sourceAnnouncementTitle: announcement.title,
+                            ),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.chat_bubble_outline, size: 18),
+                      label: const Text('問い合わせ'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        side: const BorderSide(color: Colors.white24),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: isConfirmed
+                        ? OutlinedButton.icon(
+                            onPressed: null,
+                            icon: const Icon(Icons.check_circle, size: 18),
+                            label: const Text('確認済み'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: const Color(0xFF22C55E),
+                              disabledForegroundColor: const Color(0xFF22C55E),
+                              side: const BorderSide(color: Color(0xFF22C55E)),
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                          )
+                        : ElevatedButton.icon(
+                            onPressed: _isConfirming ? null : _confirm,
+                            icon: _isConfirming
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2, color: Colors.black),
+                                  )
+                                : const Icon(Icons.check_circle_outline, size: 18),
+                            label: const Text('確認しました'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.cyanAccent,
+                              foregroundColor: Colors.black,
+                              padding: const EdgeInsets.symmetric(vertical: 14),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                          ),
+                  ),
+                ],
+              ),
+              if (_confirmFailed) ...[
+                const SizedBox(height: 12),
+                const Text('確認の送信に失敗しました。もう一度お試しください。',
+                    style: TextStyle(color: Color(0xFFEF4444), fontSize: 12.5)),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================
 // SVによる送信済みタスクの確認(SVホーム「既読・完了確認」から遷移)
 // 読み取り専用。既存の書き込みロジック(タスク作成・完了報告・問い合わせ)には
 // 一切触れない。
@@ -6257,6 +7050,372 @@ class SentTaskDetailScreen extends StatelessWidget {
                 ),
                 child: Text(
                   task.detail.isEmpty ? '(詳細の記載はありません)' : task.detail,
+                  style: const TextStyle(color: Colors.white70, fontSize: 13.5, height: 1.5),
+                ),
+              ),
+              if (linkedReports.isNotEmpty) ...[
+                const SizedBox(height: 20),
+                const Text('スタッフからの回答',
+                    style:
+                        TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                for (final report in linkedReports) ...[
+                  Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.only(bottom: 10),
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF141826),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.white10),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(report.category,
+                                style: TextStyle(
+                                    color: report.color,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold)),
+                            Text(report.time,
+                                style: TextStyle(color: Colors.grey[500], fontSize: 11)),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        for (final field in report.fields)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: RichText(
+                              text: TextSpan(
+                                style: const TextStyle(fontSize: 12.5, height: 1.4),
+                                children: [
+                                  TextSpan(
+                                      text: '${field.key}: ',
+                                      style: TextStyle(color: Colors.grey[500])),
+                                  TextSpan(
+                                      text: field.value,
+                                      style: const TextStyle(color: Colors.white70)),
+                                ],
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// SVによる送信済みお知らせの確認状況(AnnouncementSendScreenのAppBarから遷移)
+// SentTasksScreen/SentTaskDetailScreenと同じ構造をannouncements向けに複製したもの。
+// 確認済み判定はannouncementsドキュメント自身のconfirmedAtを直接見るため、
+// タスクのようなsourceTaskId横断集計(taskLinkedReportsFrom相当)は確認判定には不要
+// (問い合わせ有無の判定にはannouncementLinkedReportsFromを使う)。
+// ============================================================
+
+enum _SentAnnouncementTab { unconfirmed, confirmed, all }
+
+extension on _SentAnnouncementTab {
+  String get label {
+    switch (this) {
+      case _SentAnnouncementTab.unconfirmed:
+        return '未確認';
+      case _SentAnnouncementTab.confirmed:
+        return '確認済み';
+      case _SentAnnouncementTab.all:
+        return '全件';
+    }
+  }
+}
+
+class SentAnnouncementsScreen extends StatefulWidget {
+  const SentAnnouncementsScreen({super.key});
+
+  @override
+  State<SentAnnouncementsScreen> createState() => _SentAnnouncementsScreenState();
+}
+
+class _SentAnnouncementsScreenState extends State<SentAnnouncementsScreen> {
+  _SentAnnouncementTab _selectedTab = _SentAnnouncementTab.unconfirmed;
+
+  @override
+  void initState() {
+    super.initState();
+    SentAnnouncementStore.instance.addListener(_onChanged);
+    SvReportStore.instance.addListener(_onChanged);
+    StaffRosterStore.instance.addListener(_onChanged);
+  }
+
+  @override
+  void dispose() {
+    SentAnnouncementStore.instance.removeListener(_onChanged);
+    SvReportStore.instance.removeListener(_onChanged);
+    StaffRosterStore.instance.removeListener(_onChanged);
+    super.dispose();
+  }
+
+  void _onChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final announcements = SentAnnouncementStore.instance.entries;
+    final linkedReports = announcementLinkedReportsFrom(SvReportStore.instance.entries);
+    final staffNames = {
+      for (final s in StaffRosterStore.instance.staff) s.uid: s.displayName,
+    };
+
+    List<Announcement> filtered;
+    switch (_selectedTab) {
+      case _SentAnnouncementTab.unconfirmed:
+        filtered = announcements.where((a) => !a.isConfirmed).toList();
+        break;
+      case _SentAnnouncementTab.confirmed:
+        filtered = announcements.where((a) => a.isConfirmed).toList();
+        break;
+      case _SentAnnouncementTab.all:
+        filtered = announcements;
+        break;
+    }
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0E1A),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0A0E1A),
+        elevation: 0,
+        title: const Text('送信したお知らせ', style: TextStyle(color: Colors.white, fontSize: 17)),
+        iconTheme: const IconThemeData(color: Colors.white70),
+      ),
+      body: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Row(
+                children: [
+                  for (final tab in _SentAnnouncementTab.values) ...[
+                    if (tab != _SentAnnouncementTab.values.first) const SizedBox(width: 8),
+                    Expanded(
+                      child: _SummaryTabChip(
+                        label: tab.label,
+                        selected: tab == _selectedTab,
+                        onTap: () => setState(() => _selectedTab = tab),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            Expanded(
+              child: filtered.isEmpty
+                  ? Center(
+                      child: Text('該当するお知らせはありません。',
+                          style: TextStyle(color: Colors.grey[500], fontSize: 13)),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                      itemCount: filtered.length,
+                      itemBuilder: (context, index) {
+                        final announcement = filtered[index];
+                        final reports = linkedReports[announcement.id] ?? const [];
+                        final hasInquiry = reports.any((r) => r.category == '業務相談');
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: Material(
+                            color: Colors.transparent,
+                            borderRadius: BorderRadius.circular(16),
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(16),
+                              onTap: () {
+                                Navigator.of(context).push(
+                                  MaterialPageRoute(
+                                    builder: (_) => SentAnnouncementDetailScreen(
+                                      announcement: announcement,
+                                      linkedReports: reports,
+                                      staffName: staffNames[announcement.staffId],
+                                    ),
+                                  ),
+                                );
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.all(14),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF141826),
+                                  borderRadius: BorderRadius.circular(16),
+                                  border: Border.all(color: Colors.white10),
+                                ),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const CircleAvatar(
+                                      radius: 20,
+                                      backgroundColor: Color(0x3306B6D4),
+                                      child: Icon(Icons.campaign_outlined,
+                                          color: Colors.white, size: 18),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                            children: [
+                                              Expanded(
+                                                child: Text(
+                                                  '宛先: ${staffNames[announcement.staffId] ?? shortStaffId(announcement.staffId)}',
+                                                  style: const TextStyle(
+                                                      color: Color(0xFF06B6D4),
+                                                      fontSize: 12,
+                                                      fontWeight: FontWeight.bold),
+                                                ),
+                                              ),
+                                              Text(announcement.time,
+                                                  style: TextStyle(
+                                                      color: Colors.grey[500], fontSize: 11)),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Text(announcement.title,
+                                              style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 13.5,
+                                                  height: 1.3)),
+                                          const SizedBox(height: 8),
+                                          Wrap(
+                                            spacing: 6,
+                                            runSpacing: 6,
+                                            children: [
+                                              _AnnouncementStatusChip(
+                                                  isConfirmed: announcement.isConfirmed),
+                                              if (hasInquiry) const _InquiryChip(),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const Icon(Icons.chevron_right,
+                                        color: Colors.white24, size: 18),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class SentAnnouncementDetailScreen extends StatelessWidget {
+  final Announcement announcement;
+  final List<HistoryEntry> linkedReports;
+  final String? staffName;
+
+  const SentAnnouncementDetailScreen({
+    super.key,
+    required this.announcement,
+    required this.linkedReports,
+    this.staffName,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0E1A),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0A0E1A),
+        elevation: 0,
+        title: const Text('お知らせ詳細', style: TextStyle(color: Colors.white, fontSize: 17)),
+        iconTheme: const IconThemeData(color: Colors.white70),
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF141826),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white10),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const CircleAvatar(
+                          radius: 20,
+                          backgroundColor: Color(0x3306B6D4),
+                          child: Icon(Icons.campaign_outlined, color: Colors.white, size: 18),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(announcement.title,
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text('宛先: ${staffName ?? shortStaffId(announcement.staffId)}',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
+                    const SizedBox(height: 4),
+                    Text('送信: ${announcement.time}',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
+                    if (announcement.isConfirmed) ...[
+                      const SizedBox(height: 4),
+                      Text('確認: ${formatRelativeTime(announcement.confirmedAt!)}',
+                          style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
+                    ],
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        _AnnouncementStatusChip(isConfirmed: announcement.isConfirmed),
+                        if (linkedReports.any((r) => r.category == '業務相談'))
+                          const _InquiryChip(),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text('内容',
+                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF141826),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white10),
+                ),
+                child: Text(
+                  announcement.body.isEmpty ? '(本文の記載はありません)' : announcement.body,
                   style: const TextStyle(color: Colors.white70, fontSize: 13.5, height: 1.5),
                 ),
               ),
