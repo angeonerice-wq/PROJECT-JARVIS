@@ -389,6 +389,24 @@ class _HomePageState extends State<HomePage> {
   int _selectedIndex = 2; // 初期表示はJARVISタブ(ホームと同じ内容)
   SummaryReportTab? _summaryInitialTab;
 
+  @override
+  void initState() {
+    super.initState();
+    // ログイン直後はroleが非同期で確定するため、確定時に再描画してホーム画面を
+    // (スタッフ向け⇔SV向けに)切り替えられるようにする。
+    UserSession.instance.addListener(_onSessionChanged);
+  }
+
+  @override
+  void dispose() {
+    UserSession.instance.removeListener(_onSessionChanged);
+    super.dispose();
+  }
+
+  void _onSessionChanged() {
+    if (mounted) setState(() {});
+  }
+
   /// ホーム画面の「未確認」「要対応」カードから、サマリータブの該当タブを選択した状態で開く。
   void _openSummaryTab(SummaryReportTab tab) {
     setState(() {
@@ -399,6 +417,8 @@ class _HomePageState extends State<HomePage> {
 
   @override
   Widget build(BuildContext context) {
+    final isSv = UserSession.instance.role == UserRole.sv;
+
     return Scaffold(
       backgroundColor: const Color(0xFF0A0E1A),
       drawer: const _AppDrawer(),
@@ -406,9 +426,13 @@ class _HomePageState extends State<HomePage> {
         child: IndexedStack(
           index: _selectedIndex,
           children: [
-            _HomeTabBody(onOpenSummaryTab: _openSummaryTab),
+            isSv
+                ? _SvHomeTabBody(onOpenSummaryTab: _openSummaryTab)
+                : _HomeTabBody(onOpenSummaryTab: _openSummaryTab),
             const HistoryTabBody(),
-            _HomeTabBody(onOpenSummaryTab: _openSummaryTab),
+            isSv
+                ? _SvHomeTabBody(onOpenSummaryTab: _openSummaryTab)
+                : _HomeTabBody(onOpenSummaryTab: _openSummaryTab),
             SummaryTabBody(initialTab: _summaryInitialTab),
             const SettingsTabBody(),
           ],
@@ -516,6 +540,101 @@ bool _isToday(DateTime dt) {
   return dt.year == now.year && dt.month == now.month && dt.day == now.day;
 }
 
+/// ホーム画面上部のメニューアイコン+通知ベル。スタッフ用・SV用の両ホーム画面から
+/// 共用する(ベルのバッジ件数計算・タップ遷移を1箇所にまとめて重複を避ける)。
+class _HomeHeaderBar extends StatefulWidget {
+  final void Function(SummaryReportTab tab)? onOpenSummaryTab;
+
+  const _HomeHeaderBar({this.onOpenSummaryTab});
+
+  @override
+  State<_HomeHeaderBar> createState() => _HomeHeaderBarState();
+}
+
+class _HomeHeaderBarState extends State<_HomeHeaderBar> {
+  @override
+  void initState() {
+    super.initState();
+    UserSession.instance.addListener(_onChanged);
+    SvReportStore.instance.addListener(_onChanged);
+  }
+
+  @override
+  void dispose() {
+    UserSession.instance.removeListener(_onChanged);
+    SvReportStore.instance.removeListener(_onChanged);
+    super.dispose();
+  }
+
+  void _onChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isSv = UserSession.instance.role == UserRole.sv;
+    // 通知ベルのバッジ件数。統計カードの未確認/要対応(本日分のみ)とは異なり、
+    // タップ先のサマリータブと一致させるため全期間で算出する。
+    final bellBadgeCount = isSv
+        ? filterReportsByTab(SvReportStore.instance.entries, SummaryReportTab.unreviewed)
+                .length +
+            filterReportsByTab(SvReportStore.instance.entries, SummaryReportTab.needsAction)
+                .length
+        : 0;
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Builder(
+          builder: (context) => InkWell(
+            onTap: () => Scaffold.of(context).openDrawer(),
+            borderRadius: BorderRadius.circular(20),
+            child: const Padding(
+              padding: EdgeInsets.all(4),
+              child: Icon(Icons.menu, color: Colors.white70, size: 26),
+            ),
+          ),
+        ),
+        Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(20),
+            onTap: isSv
+                ? () => widget.onOpenSummaryTab?.call(SummaryReportTab.unreviewed)
+                : null,
+            child: Padding(
+              padding: const EdgeInsets.all(4),
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  const Icon(Icons.notifications_none, color: Colors.white70, size: 26),
+                  if (bellBadgeCount > 0)
+                    Positioned(
+                      right: -2,
+                      top: -2,
+                      child: Container(
+                        padding: const EdgeInsets.all(3),
+                        decoration: const BoxDecoration(
+                          color: Colors.redAccent,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Text(
+                          bellBadgeCount > 99 ? '99+' : '$bellBadgeCount',
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _HomeTabBody extends StatefulWidget {
   final void Function(SummaryReportTab tab)? onOpenSummaryTab;
 
@@ -568,74 +687,13 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
             e.reviewedAction == SuggestedAction.escalate)
         .length;
 
-    // 通知ベルのバッジ件数。統計カードの未確認/要対応(本日分のみ)とは異なり、
-    // タップ先のサマリータブと一致させるため全期間で算出する。
-    final bellBadgeCount = isSv
-        ? filterReportsByTab(SvReportStore.instance.entries, SummaryReportTab.unreviewed)
-                .length +
-            filterReportsByTab(SvReportStore.instance.entries, SummaryReportTab.needsAction)
-                .length
-        : 0;
-
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Builder(
-                builder: (context) => InkWell(
-                  onTap: () => Scaffold.of(context).openDrawer(),
-                  borderRadius: BorderRadius.circular(20),
-                  child: const Padding(
-                    padding: EdgeInsets.all(4),
-                    child: Icon(Icons.menu, color: Colors.white70, size: 26),
-                  ),
-                ),
-              ),
-              Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(20),
-                  onTap: isSv
-                      ? () => widget.onOpenSummaryTab?.call(SummaryReportTab.unreviewed)
-                      : null,
-                  child: Padding(
-                    padding: const EdgeInsets.all(4),
-                    child: Stack(
-                      clipBehavior: Clip.none,
-                      children: [
-                        const Icon(Icons.notifications_none,
-                            color: Colors.white70, size: 26),
-                        if (bellBadgeCount > 0)
-                          Positioned(
-                            right: -2,
-                            top: -2,
-                            child: Container(
-                              padding: const EdgeInsets.all(3),
-                              decoration: const BoxDecoration(
-                                color: Colors.redAccent,
-                                shape: BoxShape.circle,
-                              ),
-                              child: Text(
-                                bellBadgeCount > 99 ? '99+' : '$bellBadgeCount',
-                                style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold),
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
+          _HomeHeaderBar(onOpenSummaryTab: widget.onOpenSummaryTab),
               const SizedBox(height: 24),
               const Center(
                 child: JarvisLogo(size: 118),
@@ -845,6 +903,122 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
   }
 }
 
+/// SV専用のホーム画面。スタッフ向けの6カテゴリ報告カードの代わりに、
+/// SVの役割6項目(相談・報告受領/タスクを送る/既読・完了確認/お知らせ配信/
+/// 稼働確認/スタッフ別管理)へのナビゲーションを表示する。
+/// 実装済みなのは「相談・報告受領」(既存のサマリータブへ遷移)と
+/// 「タスクを送る」(既存のAssignTaskScreenへ遷移)のみで、残り4項目は
+/// 準備中プレースホルダー。
+class _SvHomeTabBody extends StatelessWidget {
+  final void Function(SummaryReportTab tab)? onOpenSummaryTab;
+
+  const _SvHomeTabBody({this.onOpenSummaryTab});
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const SizedBox(height: 8),
+          _HomeHeaderBar(onOpenSummaryTab: onOpenSummaryTab),
+          const SizedBox(height: 24),
+          const Center(
+            child: JarvisLogo(size: 118),
+          ),
+          const SizedBox(height: 12),
+          Center(
+            child: Text(
+              'JARVIS',
+              style: GoogleFonts.orbitron(
+                color: Colors.white,
+                fontSize: 34,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 6,
+                shadows: [
+                  Shadow(
+                    color: const Color(0xFF4FD8FF).withValues(alpha: 0.9),
+                    blurRadius: 18,
+                  ),
+                  Shadow(
+                    color: const Color(0xFF4FD8FF).withValues(alpha: 0.6),
+                    blurRadius: 30,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Center(
+            child: Text(
+              'SVメニュー',
+              style: TextStyle(color: Colors.grey[400], fontSize: 15),
+            ),
+          ),
+          const SizedBox(height: 24),
+          GridView.count(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            crossAxisCount: 2,
+            crossAxisSpacing: 12,
+            mainAxisSpacing: 12,
+            childAspectRatio: 2.15,
+            children: [
+              CategoryCard(
+                title: '相談・報告受領',
+                subtitle: 'スタッフからの\n報告・相談を確認',
+                icon: Icons.inbox,
+                color: const Color(0xFF3B82F6),
+                onTap: () => onOpenSummaryTab?.call(SummaryReportTab.unreviewed),
+              ),
+              CategoryCard(
+                title: 'タスクを送る',
+                subtitle: 'スタッフ個人へ\nタスクを割り当て',
+                icon: Icons.assignment_ind_outlined,
+                color: const Color(0xFFF97316),
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const AssignTaskScreen()),
+                  );
+                },
+              ),
+              CategoryCard(
+                title: '既読・完了確認',
+                subtitle: '送信済みの\n既読/完了状況',
+                icon: Icons.fact_check_outlined,
+                color: const Color(0xFF22C55E),
+                onTap: () => showComingSoonDialog(context, '既読・完了確認'),
+              ),
+              CategoryCard(
+                title: 'お知らせ配信',
+                subtitle: '複数人・全員への\n一斉送信',
+                icon: Icons.campaign_outlined,
+                color: const Color(0xFF06B6D4),
+                onTap: () => showComingSoonDialog(context, 'お知らせ配信'),
+              ),
+              CategoryCard(
+                title: '稼働確認',
+                subtitle: '現在稼働中の\nスタッフを確認',
+                icon: Icons.people_outline,
+                color: const Color(0xFFA855F7),
+                onTap: () => showComingSoonDialog(context, '稼働確認'),
+              ),
+              CategoryCard(
+                title: 'スタッフ別管理',
+                subtitle: 'スタッフごとの\n状況・履歴',
+                icon: Icons.manage_accounts_outlined,
+                color: const Color(0xFF64748B),
+                onTap: () => showComingSoonDialog(context, 'スタッフ別管理'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
+}
 
 class CategoryCard extends StatelessWidget {
   final String title;
@@ -1405,6 +1579,26 @@ String formatRelativeTime(DateTime timestamp) {
 String shortStaffId(String? staffId) {
   if (staffId == null || staffId.isEmpty) return '不明';
   return staffId.length <= 8 ? staffId : '${staffId.substring(0, 8)}…';
+}
+
+/// まだ実装が用意できていない項目のタップ時に表示する簡易ダイアログ。
+/// 設定タブ(利用規約・プライバシーポリシー)・SVホーム画面(未実装項目)で共用する。
+void showComingSoonDialog(BuildContext context, String label) {
+  showDialog<void>(
+    context: context,
+    builder: (context) => AlertDialog(
+      backgroundColor: const Color(0xFF141826),
+      title: Text(label, style: const TextStyle(color: Colors.white)),
+      content: const Text('準備中です。今しばらくお待ちください。',
+          style: TextStyle(color: Colors.white70)),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('閉じる'),
+        ),
+      ],
+    ),
+  );
 }
 
 /// カテゴリ文字列からアイコンと色を算出する(Firestoreにはicon/colorを保存せず、
@@ -4917,26 +5111,6 @@ class _SettingsTabBodyState extends State<SettingsTabBody> {
 
   Future<void> _handleLogout() => performLogout(context);
 
-  /// 「利用規約」「プライバシーポリシー」など、まだ文書を用意できていない項目の
-  /// タップ時に表示する簡易ダイアログ。
-  void _showComingSoonDialog(String label) {
-    showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF141826),
-        title: Text(label, style: const TextStyle(color: Colors.white)),
-        content: const Text('準備中です。今しばらくお待ちください。',
-            style: TextStyle(color: Colors.white70)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('閉じる'),
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return SingleChildScrollView(
@@ -5017,12 +5191,12 @@ class _SettingsTabBodyState extends State<SettingsTabBody> {
           _SettingsNavTile(
             icon: Icons.description_outlined,
             label: '利用規約',
-            onTap: () => _showComingSoonDialog('利用規約'),
+            onTap: () => showComingSoonDialog(context, '利用規約'),
           ),
           _SettingsNavTile(
             icon: Icons.privacy_tip_outlined,
             label: 'プライバシーポリシー',
-            onTap: () => _showComingSoonDialog('プライバシーポリシー'),
+            onTap: () => showComingSoonDialog(context, 'プライバシーポリシー'),
           ),
           const SizedBox(height: 20),
           _SettingsNavTile(
