@@ -1104,7 +1104,11 @@ class _SvHomeTabBody extends StatelessWidget {
                 subtitle: 'スタッフごとの\n状況・履歴',
                 icon: Icons.manage_accounts_outlined,
                 color: const Color(0xFF64748B),
-                onTap: () => showComingSoonDialog(context, 'スタッフ別管理'),
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const StaffManagementListScreen()),
+                  );
+                },
               ),
             ],
           ),
@@ -2123,6 +2127,23 @@ Set<String> completedTaskIdsFrom(List<HistoryEntry> entries) {
       .where((e) => e.value.any((r) => r.category == 'タスク完了'))
       .map((e) => e.key)
       .toSet();
+}
+
+/// 指定スタッフの、指定カテゴリ(前方一致)の今月の件数を数える。
+/// HistoryStore.countThisMonthと同じロジックだが、「ログイン中の自分」専用ではなく
+/// SVが任意の配下スタッフ(staffId)について集計できるようにしたもの(スタッフ別管理画面用)。
+int monthlyCategoryCountForStaff(
+  List<HistoryEntry> entries,
+  String staffId,
+  String categoryPrefix,
+) {
+  final now = DateTime.now();
+  return entries.where((e) {
+    return e.staffId == staffId &&
+        e.category.startsWith(categoryPrefix) &&
+        e.timestamp.year == now.year &&
+        e.timestamp.month == now.month;
+  }).length;
 }
 
 class ChatInputBar extends StatelessWidget {
@@ -6215,6 +6236,370 @@ class SentTaskDetailScreen extends StatelessWidget {
               ],
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// SVによるスタッフ別管理(SVホーム画面のカードから遷移)
+// 新規Firestoreクエリは追加せず、StaffRosterStore/SvReportStore/SentTaskStoreが
+// 既に購読済みのデータをstaffIdでクライアント側フィルタするだけで構成する。
+// ============================================================
+
+class StaffManagementListScreen extends StatefulWidget {
+  const StaffManagementListScreen({super.key});
+
+  @override
+  State<StaffManagementListScreen> createState() => _StaffManagementListScreenState();
+}
+
+class _StaffManagementListScreenState extends State<StaffManagementListScreen> {
+  @override
+  void initState() {
+    super.initState();
+    StaffRosterStore.instance.addListener(_onChanged);
+  }
+
+  @override
+  void dispose() {
+    StaffRosterStore.instance.removeListener(_onChanged);
+    super.dispose();
+  }
+
+  void _onChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final staff = StaffRosterStore.instance.staff;
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0E1A),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0A0E1A),
+        elevation: 0,
+        title: const Text('スタッフ別管理', style: TextStyle(color: Colors.white, fontSize: 17)),
+        iconTheme: const IconThemeData(color: Colors.white70),
+      ),
+      body: SafeArea(
+        child: staff.isEmpty
+            ? Center(
+                child: Text('配下スタッフが見つかりません。',
+                    style: TextStyle(color: Colors.grey[500], fontSize: 13)),
+              )
+            : ListView.builder(
+                padding: const EdgeInsets.all(16),
+                itemCount: staff.length,
+                itemBuilder: (context, index) {
+                  final s = staff[index];
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Material(
+                      color: Colors.transparent,
+                      borderRadius: BorderRadius.circular(16),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => StaffDetailScreen(staff: s),
+                            ),
+                          );
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF141826),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: Colors.white10),
+                          ),
+                          child: Row(
+                            children: [
+                              const CircleAvatar(
+                                radius: 20,
+                                backgroundColor: Color(0x3364748B),
+                                child: Icon(Icons.person, color: Colors.white, size: 18),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(s.displayName ?? shortStaffId(s.uid),
+                                    style: const TextStyle(color: Colors.white, fontSize: 14.5)),
+                              ),
+                              const Icon(Icons.chevron_right, color: Colors.white38, size: 18),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+      ),
+    );
+  }
+}
+
+class StaffDetailScreen extends StatefulWidget {
+  final StaffProfile staff;
+  const StaffDetailScreen({super.key, required this.staff});
+
+  @override
+  State<StaffDetailScreen> createState() => _StaffDetailScreenState();
+}
+
+class _StaffDetailScreenState extends State<StaffDetailScreen> {
+  @override
+  void initState() {
+    super.initState();
+    SvReportStore.instance.addListener(_onChanged);
+    SentTaskStore.instance.addListener(_onChanged);
+  }
+
+  @override
+  void dispose() {
+    SvReportStore.instance.removeListener(_onChanged);
+    SentTaskStore.instance.removeListener(_onChanged);
+    super.dispose();
+  }
+
+  void _onChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Widget _sectionCard({required Widget child}) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF141826),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white10),
+      ),
+      child: child,
+    );
+  }
+
+  Widget _entryList(List<HistoryEntry> entries, String emptyLabel) {
+    if (entries.isEmpty) {
+      return Text(emptyLabel, style: TextStyle(color: Colors.grey[500], fontSize: 12.5));
+    }
+    final rows = entries.take(5).toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (var i = 0; i < rows.length; i++) ...[
+          if (i > 0)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Divider(height: 1, color: Colors.white10),
+            ),
+          _StaffHistoryRow(entry: rows[i]),
+        ],
+      ],
+    );
+  }
+
+  Widget _taskList(List<AssignedTask> tasks, Map<String, List<HistoryEntry>> linkedReports,
+      String? staffName) {
+    if (tasks.isEmpty) {
+      return Text('送信済みのタスクはありません。',
+          style: TextStyle(color: Colors.grey[500], fontSize: 12.5));
+    }
+    final rows = tasks.take(5).toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (var i = 0; i < rows.length; i++) ...[
+          if (i > 0)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Divider(height: 1, color: Colors.white10),
+            ),
+          _StaffTaskRow(
+            task: rows[i],
+            linkedReports: linkedReports[rows[i].id] ?? const [],
+            staffName: staffName,
+          ),
+        ],
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final staffId = widget.staff.uid;
+    final staffName = widget.staff.displayName ?? shortStaffId(staffId);
+
+    final allReports =
+        SvReportStore.instance.entries.where((e) => e.staffId == staffId).toList();
+    final attendanceReports =
+        allReports.where((e) => e.category.startsWith('勤怠')).toList();
+    final workReports = allReports
+        .where((e) => e.category == '業務報告' || e.category == '業務相談')
+        .toList();
+    final absentCount = monthlyCategoryCountForStaff(allReports, staffId, '勤怠(欠勤)');
+    final lateCount = monthlyCategoryCountForStaff(allReports, staffId, '勤怠(遅刻)');
+
+    final tasks = SentTaskStore.instance.entries.where((t) => t.staffId == staffId).toList();
+    final linkedReports = taskLinkedReportsFrom(SvReportStore.instance.entries);
+
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0E1A),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF0A0E1A),
+        elevation: 0,
+        title: Text(staffName, style: const TextStyle(color: Colors.white, fontSize: 17)),
+        iconTheme: const IconThemeData(color: Colors.white70),
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('勤怠状況',
+                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              _sectionCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('今月: 欠勤$absentCount件・遅刻$lateCount件',
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 10),
+                    _entryList(attendanceReports, '勤怠関連の報告はありません。'),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+              const Text('業務報告・相談履歴',
+                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              _sectionCard(child: _entryList(workReports, '業務報告・相談の履歴はありません。')),
+              const SizedBox(height: 20),
+              const Text('送ったタスクの状況',
+                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              _sectionCard(child: _taskList(tasks, linkedReports, staffName)),
+              const SizedBox(height: 24),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StaffHistoryRow extends StatelessWidget {
+  final HistoryEntry entry;
+  const _StaffHistoryRow({required this.entry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => SvSummaryScreen(
+                summary: SvReportSummary(
+                  id: entry.id,
+                  category: entry.category,
+                  icon: entry.icon,
+                  color: entry.color,
+                  time: entry.time,
+                  fields: entry.fields,
+                  action: entry.action,
+                  history: entry.history,
+                ),
+              ),
+            ),
+          );
+        },
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(entry.icon, color: entry.color, size: 16),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(entry.category,
+                      style: TextStyle(
+                          color: entry.color, fontSize: 12.5, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 2),
+                  Text(entry.title, style: const TextStyle(color: Colors.white, fontSize: 13)),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(entry.time, style: TextStyle(color: Colors.grey[500], fontSize: 11)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _StaffTaskRow extends StatelessWidget {
+  final AssignedTask task;
+  final List<HistoryEntry> linkedReports;
+  final String? staffName;
+  const _StaffTaskRow({required this.task, required this.linkedReports, this.staffName});
+
+  @override
+  Widget build(BuildContext context) {
+    final completed = linkedReports.any((r) => r.category == 'タスク完了');
+    final hasInquiry = linkedReports.any((r) => r.category == '業務相談');
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => SentTaskDetailScreen(
+                task: task,
+                linkedReports: linkedReports,
+                staffName: staffName,
+              ),
+            ),
+          );
+        },
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Icon(Icons.assignment_ind_outlined, color: Colors.white38, size: 16),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(task.title, style: const TextStyle(color: Colors.white, fontSize: 13)),
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      _SentTaskStatusChip(isCompleted: completed),
+                      if (hasInquiry) const _InquiryChip(),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(task.time, style: TextStyle(color: Colors.grey[500], fontSize: 11)),
+          ],
         ),
       ),
     );
