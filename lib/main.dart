@@ -395,11 +395,14 @@ class _HomePageState extends State<HomePage> {
     // ログイン直後はroleが非同期で確定するため、確定時に再描画してホーム画面を
     // (スタッフ向け⇔SV向けに)切り替えられるようにする。
     UserSession.instance.addListener(_onSessionChanged);
+    // 履歴アイコンの未読バッジ(要対応件数)算出に使う。スタッフのみが対象。
+    HistoryStore.instance.addListener(_onSessionChanged);
   }
 
   @override
   void dispose() {
     UserSession.instance.removeListener(_onSessionChanged);
+    HistoryStore.instance.removeListener(_onSessionChanged);
     super.dispose();
   }
 
@@ -415,9 +418,22 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
+  /// ホーム画面の「要対応」件数タップ・アラートバナーから、履歴タブを開く。
+  void _openHistoryTab() {
+    setState(() => _selectedIndex = 1);
+  }
+
   @override
   Widget build(BuildContext context) {
     final isSv = UserSession.instance.role == UserRole.sv;
+
+    // 履歴アイコンの未読バッジ件数。ホームの「要対応」カードと同じ条件
+    // (エスカレーションはSVが引き取るため含めない)。SVには表示しない。
+    final needsRescheduleCount = isSv
+        ? 0
+        : HistoryStore.instance.entries
+            .where((e) => e.reviewedAction == SuggestedAction.needsReschedule)
+            .length;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0A0E1A),
@@ -428,11 +444,11 @@ class _HomePageState extends State<HomePage> {
           children: [
             isSv
                 ? _SvHomeTabBody(onOpenSummaryTab: _openSummaryTab)
-                : _HomeTabBody(onOpenSummaryTab: _openSummaryTab),
+                : _HomeTabBody(onOpenSummaryTab: _openSummaryTab, onOpenHistoryTab: _openHistoryTab),
             const HistoryTabBody(),
             isSv
                 ? _SvHomeTabBody(onOpenSummaryTab: _openSummaryTab)
-                : _HomeTabBody(onOpenSummaryTab: _openSummaryTab),
+                : _HomeTabBody(onOpenSummaryTab: _openSummaryTab, onOpenHistoryTab: _openHistoryTab),
             SummaryTabBody(initialTab: _summaryInitialTab),
             const SettingsTabBody(),
           ],
@@ -449,7 +465,9 @@ class _HomePageState extends State<HomePage> {
         onTap: (index) => setState(() => _selectedIndex = index),
         items: [
           const BottomNavigationBarItem(icon: Icon(Icons.home), label: 'ホーム'),
-          const BottomNavigationBarItem(icon: Icon(Icons.history), label: '履歴'),
+          BottomNavigationBarItem(
+              icon: _NavBadgeIcon(icon: Icons.history, count: needsRescheduleCount),
+              label: '履歴'),
           BottomNavigationBarItem(
               icon: SizedBox(
                 height: 28,
@@ -465,6 +483,43 @@ class _HomePageState extends State<HomePage> {
           const BottomNavigationBarItem(icon: Icon(Icons.settings), label: '設定'),
         ],
       ),
+    );
+  }
+}
+
+/// 下部ナビゲーションのアイコンに未読件数バッジ(赤丸+数字)を重ねる。
+/// countが0の場合はバッジを出さず、通常のアイコンと同じ見た目にする。
+class _NavBadgeIcon extends StatelessWidget {
+  final IconData icon;
+  final int count;
+  const _NavBadgeIcon({required this.icon, required this.count});
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Icon(icon),
+        if (count > 0)
+          Positioned(
+            right: -6,
+            top: -4,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+              constraints: const BoxConstraints(minWidth: 16),
+              decoration: BoxDecoration(
+                color: const Color(0xFFEF4444),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                count > 9 ? '9+' : '$count',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
@@ -637,8 +692,9 @@ class _HomeHeaderBarState extends State<_HomeHeaderBar> {
 
 class _HomeTabBody extends StatefulWidget {
   final void Function(SummaryReportTab tab)? onOpenSummaryTab;
+  final VoidCallback? onOpenHistoryTab;
 
-  const _HomeTabBody({this.onOpenSummaryTab});
+  const _HomeTabBody({this.onOpenSummaryTab, this.onOpenHistoryTab});
 
   @override
   State<_HomeTabBody> createState() => _HomeTabBodyState();
@@ -673,11 +729,12 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
     final completedTaskCount =
         todayEntries.where((e) => e.category == 'タスク完了').length;
     final unreviewedCount = todayEntries.where((e) => e.reviewedAt == null).length;
-    final needsActionCount = todayEntries
-        .where((e) =>
-            e.reviewedAction == SuggestedAction.needsReschedule ||
-            e.reviewedAction == SuggestedAction.escalate)
-        .length;
+    // エスカレーションはSVが引き取って対応するため、スタッフ視点の「要対応」件数には
+    // 含めない(再調整依頼のみをカウントする)。
+    final needsActionEntries = todayEntries
+        .where((e) => e.reviewedAction == SuggestedAction.needsReschedule)
+        .toList();
+    final needsActionCount = needsActionEntries.length;
 
     // 「SVからのタスク」の未完了件数。新規購読は追加せず、既に購読済みの
     // HistoryStore(自分が提出した報告。sourceTaskIdが紐づいた完了報告を含む)と
@@ -715,6 +772,39 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
           onTap: () => Navigator.of(context).push(
             MaterialPageRoute(builder: (_) => const AnnouncementsScreen()),
           ),
+        ),
+      if (needsActionCount > 0)
+        _HomeNoticeCard(
+          icon: Icons.error_outline,
+          iconColor: const Color(0xFFEF4444),
+          title: '要対応の報告',
+          count: needsActionCount,
+          onTap: () {
+            // 1件だけなら該当報告の詳細に直接遷移し、複数件ある場合は
+            // どれを開くか選べるよう履歴タブを開く(スクロール等は行わない)。
+            if (needsActionEntries.length == 1) {
+              final entry = needsActionEntries.first;
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => SvSummaryScreen(
+                    summary: SvReportSummary(
+                      id: entry.id,
+                      category: entry.category,
+                      icon: entry.icon,
+                      color: entry.color,
+                      time: entry.time,
+                      fields: entry.fields,
+                      action: entry.action,
+                      history: entry.history,
+                      reviewedAction: entry.reviewedAction,
+                    ),
+                  ),
+                ),
+              );
+            } else {
+              widget.onOpenHistoryTab?.call();
+            }
+          },
         ),
     ];
 
@@ -915,7 +1005,7 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
                             color: Colors.redAccent,
                             label: '要対応',
                             value: '$needsActionCount件',
-                            onTap: null),
+                            onTap: widget.onOpenHistoryTab),
                       ],
                     ),
                   ],
@@ -1715,6 +1805,7 @@ class HistoryEntry {
   final SuggestedAction? reviewedAction;
   final String? sourceTaskId;
   final String? announcementId;
+  final String? sourceReportId;
 
   HistoryEntry({
     this.id,
@@ -1732,6 +1823,7 @@ class HistoryEntry {
     this.reviewedAction,
     this.sourceTaskId,
     this.announcementId,
+    this.sourceReportId,
   }) : timestamp = timestamp ?? DateTime.now();
 
   IconData get icon => categoryStyle(category).icon;
@@ -1750,10 +1842,11 @@ class HistoryEntry {
       'fields': fields.map((f) => {'label': f.key, 'value': f.value}).toList(),
       'history':
           history.map((m) => {'sender': m.sender.name, 'text': m.text}).toList(),
-      // 値がある時だけキーを含める。sourceTaskId/announcementIdを使わないフローの
-      // ドキュメントに不要な `null` フィールドが付与されるのを避けるため。
+      // 値がある時だけキーを含める。sourceTaskId/announcementId/sourceReportIdを
+      // 使わないフローのドキュメントに不要な `null` フィールドが付与されるのを避けるため。
       if (sourceTaskId != null) 'sourceTaskId': sourceTaskId,
       if (announcementId != null) 'announcementId': announcementId,
+      if (sourceReportId != null) 'sourceReportId': sourceReportId,
     };
   }
 
@@ -1776,6 +1869,7 @@ class HistoryEntry {
           .firstOrNull,
       sourceTaskId: data['sourceTaskId'] as String?,
       announcementId: data['announcementId'] as String?,
+      sourceReportId: data['sourceReportId'] as String?,
       action: SuggestedAction.values.firstWhere(
         (a) => a.name == data['action'],
         orElse: () => SuggestedAction.approveOnly,
@@ -3328,12 +3422,19 @@ class ConsultationChatScreen extends StatefulWidget {
   final String? sourceAnnouncementId;
   final String? sourceAnnouncementTitle;
 
+  /// SV確認画面の「対応する」から遷移した場合に、どの報告(再調整依頼)についての
+  /// 相談かを引き継ぐための任意パラメータ(sourceTaskId/sourceTaskTitleと同じ形)。
+  final String? sourceReportId;
+  final String? sourceReportTitle;
+
   const ConsultationChatScreen({
     super.key,
     this.sourceTaskId,
     this.sourceTaskTitle,
     this.sourceAnnouncementId,
     this.sourceAnnouncementTitle,
+    this.sourceReportId,
+    this.sourceReportTitle,
   });
   @override
   State<ConsultationChatScreen> createState() => _ConsultationChatScreenState();
@@ -3360,6 +3461,8 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
       _addJarvis('「${widget.sourceTaskTitle}」についてのお問い合わせですね。');
     } else if (widget.sourceAnnouncementTitle != null) {
       _addJarvis('「${widget.sourceAnnouncementTitle}」についてのお問い合わせですね。');
+    } else if (widget.sourceReportTitle != null) {
+      _addJarvis('「${widget.sourceReportTitle}」の再調整についてのご相談ですね。');
     }
     _addJarvis('お疲れ様です。どのジャンルのご相談ですか？');
     setState(() => _awaitingTopicChoice = true);
@@ -3476,6 +3579,7 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
       history: List.unmodifiable(_messages),
       sourceTaskId: widget.sourceTaskId,
       announcementId: widget.sourceAnnouncementId,
+      sourceReportId: widget.sourceReportId,
     );
 
     await _submitEntry(entry);
@@ -3501,7 +3605,9 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
       // TaskQuickCompleteScreen(完了報告)と同じく、少し間を置いて一覧画面まで自動で戻る。
       // 通常のホーム画面からの業務相談(どちらの紐づけもなし)は、このままチャット画面に
       // 留まる既存の挙動を変えない。
-      if (widget.sourceTaskId != null || widget.sourceAnnouncementId != null) {
+      if (widget.sourceTaskId != null ||
+          widget.sourceAnnouncementId != null ||
+          widget.sourceReportId != null) {
         await Future<void>.delayed(const Duration(milliseconds: 700));
         if (!mounted) return;
         Navigator.of(context)
@@ -4507,6 +4613,10 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
             separatorBuilder: (_, _) => const SizedBox(height: 10),
             itemBuilder: (context, index) {
               final e = entries[index];
+              // 要対応(再調整依頼、未承認)は履歴一覧の中で最も目に留まるよう、
+              // カード自体の背景・枠線も強調する(バッジだけだと目立たないため)。
+              final isNeedsAction =
+                  e.approvedAt == null && e.reviewedAction == SuggestedAction.needsReschedule;
               return Material(
                 color: Colors.transparent,
                 borderRadius: BorderRadius.circular(16),
@@ -4525,6 +4635,7 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
                             fields: e.fields,
                             action: e.action,
                             history: e.history,
+                            reviewedAction: e.reviewedAction,
                           ),
                         ),
                       ),
@@ -4533,9 +4644,16 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
                   child: Container(
                     padding: const EdgeInsets.all(14),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF141826),
+                      color: isNeedsAction
+                          ? const Color(0xFFF59E0B).withValues(alpha: 0.12)
+                          : const Color(0xFF141826),
                       borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: Colors.white10),
+                      border: Border.all(
+                        color: isNeedsAction
+                            ? const Color(0xFFF59E0B).withValues(alpha: 0.8)
+                            : Colors.white10,
+                        width: isNeedsAction ? 1.5 : 1,
+                      ),
                     ),
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -4574,7 +4692,7 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
                                         color: Colors.grey[600], fontSize: 11)),
                               ],
                               const SizedBox(height: 8),
-                              _ReportStatusBadge(entry: e),
+                              _ReportStatusBadge(entry: e, isSv: isSv),
                             ],
                           ),
                         ),
@@ -4596,15 +4714,22 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
 /// AIの提案アクションと、SVが実際に承認したかどうかを見分けやすくするためのバッジ。
 class _ReportStatusBadge extends StatelessWidget {
   final HistoryEntry entry;
-  const _ReportStatusBadge({required this.entry});
+  final bool isSv;
+  const _ReportStatusBadge({required this.entry, required this.isSv});
 
   @override
   Widget build(BuildContext context) {
     final isApproved = entry.approvedAt != null;
+    // エスカレーションはSVが引き取って対応する性質のもののため、スタッフ視点では
+    // 「対応が必要」ではなく受け身の表示にする。SV視点では従来通り自分の対応待ち
+    // キューとして「要対応」のまま扱う(SummaryTabBodyの要対応タブと表示を揃える)。
+    final isEscalatedForStaff =
+        !isApproved && !isSv && entry.reviewedAction == SuggestedAction.escalate;
     // 再調整依頼・エスカレーション済み(reviewedAtあり・approvedAtなし)は「要対応」として
     // 未対応(AI提案)と区別する。SVが既に対応方針を選んでいるのに「AI提案」表示のままだと
     // 未対応と見分けがつかなくなるため。
     final needsAction = !isApproved &&
+        !isEscalatedForStaff &&
         (entry.reviewedAction == SuggestedAction.needsReschedule ||
             entry.reviewedAction == SuggestedAction.escalate);
     final Color color;
@@ -4614,6 +4739,10 @@ class _ReportStatusBadge extends StatelessWidget {
       color = const Color(0xFF22C55E);
       icon = Icons.check_circle;
       label = '承認済み';
+    } else if (isEscalatedForStaff) {
+      color = Colors.grey[500]!;
+      icon = Icons.supervisor_account_outlined;
+      label = 'SV対応中';
     } else if (needsAction) {
       color = entry.reviewedAction!.color;
       icon = Icons.error_outline;
@@ -4981,6 +5110,7 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
                                 fields: e.fields,
                                 action: e.action,
                                 history: e.history,
+                                reviewedAction: e.reviewedAction,
                               ),
                             ),
                           ),
@@ -5030,7 +5160,7 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
                                       style: TextStyle(
                                           color: Colors.grey[600], fontSize: 11)),
                                   const SizedBox(height: 8),
-                                  _ReportStatusBadge(entry: e),
+                                  _ReportStatusBadge(entry: e, isSv: true),
                                 ],
                               ),
                             ),
@@ -5339,6 +5469,7 @@ class _AttendanceReportRow extends StatelessWidget {
                   fields: entry.fields,
                   action: entry.action,
                   history: entry.history,
+                  reviewedAction: entry.reviewedAction,
                 ),
               ),
             ),
@@ -5441,6 +5572,7 @@ class _CompletedTasksScreenState extends State<CompletedTasksScreen> {
                                   fields: e.fields,
                                   action: e.action,
                                   history: e.history,
+                                  reviewedAction: e.reviewedAction,
                                 ),
                               ),
                             ),
@@ -5488,7 +5620,7 @@ class _CompletedTasksScreenState extends State<CompletedTasksScreen> {
                                     Text('担当: ${e.staffName ?? shortStaffId(e.staffId)}',
                                         style: TextStyle(color: Colors.grey[600], fontSize: 11)),
                                     const SizedBox(height: 8),
-                                    _ReportStatusBadge(entry: e),
+                                    _ReportStatusBadge(entry: e, isSv: true),
                                   ],
                                 ),
                               ),
@@ -7823,6 +7955,7 @@ class _StaffHistoryRow extends StatelessWidget {
                   fields: entry.fields,
                   action: entry.action,
                   history: entry.history,
+                  reviewedAction: entry.reviewedAction,
                 ),
               ),
             ),
@@ -8147,6 +8280,7 @@ class SvReportSummary {
   final List<MapEntry<String, String>> fields;
   final SuggestedAction action;
   final List<ChatMessage> history;
+  final SuggestedAction? reviewedAction;
 
   const SvReportSummary({
     this.id,
@@ -8157,6 +8291,7 @@ class SvReportSummary {
     required this.fields,
     required this.action,
     required this.history,
+    this.reviewedAction,
   });
 }
 
@@ -8356,6 +8491,34 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
                   ],
                 ),
               ),
+              if (!isSv && s.reviewedAction == SuggestedAction.needsReschedule) ...[
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => ConsultationChatScreen(
+                            sourceReportId: s.id,
+                            sourceReportTitle: s.category,
+                          ),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.chat_bubble_outline, size: 18),
+                    label: const Text('対応する'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.cyanAccent,
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
               const SizedBox(height: 12),
 
               // 対応履歴(展開式)
