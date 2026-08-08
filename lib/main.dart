@@ -5164,7 +5164,8 @@ class AssignTaskScreen extends StatefulWidget {
 class _AssignTaskScreenState extends State<AssignTaskScreen> {
   final TextEditingController _titleController = TextEditingController();
   final TextEditingController _detailController = TextEditingController();
-  StaffProfile? _selectedStaff;
+  final Set<String> _selectedStaffIds = {};
+  bool _sendToEveryone = false;
   bool _isSaving = false;
   bool _saveFailed = false;
   String? _validationError;
@@ -5188,11 +5189,14 @@ class _AssignTaskScreenState extends State<AssignTaskScreen> {
   }
 
   Future<void> _submit() async {
-    final staff = _selectedStaff;
+    final roster = StaffRosterStore.instance.staff;
+    final targets = _sendToEveryone
+        ? roster
+        : roster.where((s) => _selectedStaffIds.contains(s.uid)).toList();
     final title = _titleController.text.trim();
     final detail = _detailController.text.trim();
-    if (staff == null || title.isEmpty) {
-      setState(() => _validationError = '担当スタッフとタイトルは必須です。');
+    if (targets.isEmpty || title.isEmpty) {
+      setState(() => _validationError = '送信先スタッフとタイトルは必須です。');
       return;
     }
 
@@ -5205,19 +5209,26 @@ class _AssignTaskScreenState extends State<AssignTaskScreen> {
       _validationError = null;
     });
     try {
-      await FirebaseFirestore.instance.collection('tasks').add({
-        'staffId': staff.uid,
-        'assignedBy': uid,
-        'assignedByName': UserSession.instance.displayName,
-        'title': title,
-        'detail': detail,
-        'createdAt': FieldValue.serverTimestamp(),
-      }).timeout(const Duration(seconds: 10));
+      final batch = FirebaseFirestore.instance.batch();
+      for (final staff in targets) {
+        final ref = FirebaseFirestore.instance.collection('tasks').doc();
+        batch.set(ref, {
+          'staffId': staff.uid,
+          'assignedBy': uid,
+          'assignedByName': UserSession.instance.displayName,
+          'title': title,
+          'detail': detail,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit().timeout(const Duration(seconds: 10));
       if (!mounted) return;
       setState(() => _isSaving = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('${staff.displayName ?? shortStaffId(staff.uid)}さんにタスクを割り当てました。'),
+          content: Text(targets.length == 1
+              ? '${targets.first.displayName ?? shortStaffId(targets.first.uid)}さんにタスクを割り当てました。'
+              : '${targets.length}名にタスクを割り当てました。'),
           backgroundColor: const Color(0xFF141826),
           behavior: SnackBarBehavior.floating,
         ),
@@ -5250,39 +5261,54 @@ class _AssignTaskScreenState extends State<AssignTaskScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('担当スタッフ',
+              const Text('送信先スタッフ',
                   style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
               if (staff.isEmpty)
                 Text('配下スタッフが見つかりません。', style: TextStyle(color: Colors.grey[500], fontSize: 12.5))
               else
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
                   decoration: BoxDecoration(
                     color: const Color(0xFF141826),
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: Colors.white10),
                   ),
-                  child: DropdownButtonHideUnderline(
-                    child: DropdownButton<StaffProfile>(
-                      value: _selectedStaff,
-                      isExpanded: true,
-                      dropdownColor: const Color(0xFF141826),
-                      hint: Text('スタッフを選択', style: TextStyle(color: Colors.grey[500])),
-                      style: const TextStyle(color: Colors.white, fontSize: 14),
-                      items: staff
-                          .map((s) => DropdownMenuItem(
-                                value: s,
-                                child: Text(s.displayName ?? shortStaffId(s.uid)),
-                              ))
-                          .toList(),
-                      onChanged: _isSaving
-                          ? null
-                          : (v) => setState(() {
-                                _selectedStaff = v;
-                                _validationError = null;
-                              }),
-                    ),
+                  child: Column(
+                    children: [
+                      CheckboxListTile(
+                        value: _sendToEveryone,
+                        title: Text('全員に送信(${staff.length}名)',
+                            style: const TextStyle(color: Colors.white, fontSize: 14)),
+                        activeColor: Colors.cyanAccent,
+                        checkColor: Colors.black,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        onChanged: _isSaving
+                            ? null
+                            : (v) => setState(() {
+                                  _sendToEveryone = v ?? false;
+                                  _validationError = null;
+                                }),
+                      ),
+                      const Divider(height: 1, color: Colors.white10),
+                      ...staff.map((s) => CheckboxListTile(
+                            value: _sendToEveryone || _selectedStaffIds.contains(s.uid),
+                            title: Text(s.displayName ?? shortStaffId(s.uid),
+                                style: const TextStyle(color: Colors.white, fontSize: 14)),
+                            activeColor: Colors.cyanAccent,
+                            checkColor: Colors.black,
+                            controlAffinity: ListTileControlAffinity.leading,
+                            onChanged: (_isSaving || _sendToEveryone)
+                                ? null
+                                : (v) => setState(() {
+                                      if (v == true) {
+                                        _selectedStaffIds.add(s.uid);
+                                      } else {
+                                        _selectedStaffIds.remove(s.uid);
+                                      }
+                                      _validationError = null;
+                                    }),
+                          )),
+                    ],
                   ),
                 ),
               const SizedBox(height: 20),
