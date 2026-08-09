@@ -4629,6 +4629,7 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
     UserSession.instance.addListener(_onStoreChanged);
     HistoryStore.instance.addListener(_onStoreChanged);
     SvHistoryStore.instance.addListener(_onStoreChanged);
+    SvReportStore.instance.addListener(_onStoreChanged);
   }
 
   @override
@@ -4636,6 +4637,7 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
     UserSession.instance.removeListener(_onStoreChanged);
     HistoryStore.instance.removeListener(_onStoreChanged);
     SvHistoryStore.instance.removeListener(_onStoreChanged);
+    SvReportStore.instance.removeListener(_onStoreChanged);
     super.dispose();
   }
 
@@ -4647,6 +4649,14 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
   Widget build(BuildContext context) {
     final isSv = UserSession.instance.role == UserRole.sv;
     final entries = isSv ? SvHistoryStore.instance.entries : HistoryStore.instance.entries;
+    // sourceReportIdが紐づく報告(「対応する」経由の業務相談)で、元の報告のカテゴリを
+    // 一覧・詳細画面に注記するためのルックアップ。元の報告がまだ未レビューの場合は
+    // SvHistoryStore(自分がレビュー済みの報告のみ)には無いため、自チーム全報告を
+    // 購読しているSvReportStoreから構築する(新規Firestore読み取りは不要)。
+    final reportCategoryById = {
+      for (final e in SvReportStore.instance.entries)
+        if (e.id != null) e.id!: e.category,
+    };
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -4709,6 +4719,9 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
                             action: e.action,
                             history: e.history,
                             reviewedAction: e.reviewedAction,
+                            sourceReportCategory: e.sourceReportId != null
+                                ? reportCategoryById[e.sourceReportId]
+                                : null,
                           ),
                         ),
                       ),
@@ -4757,6 +4770,16 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
                               Text(e.title,
                                   style: const TextStyle(
                                       color: Colors.white, fontSize: 13.5, height: 1.3)),
+                              if (e.sourceReportId != null &&
+                                  reportCategoryById[e.sourceReportId] != null) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                    '元の報告:「${reportCategoryById[e.sourceReportId]}」への回答',
+                                    style: const TextStyle(
+                                        color: Color(0xFFA855F7),
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold)),
+                              ],
                               if (isSv) ...[
                                 const SizedBox(height: 4),
                                 Text(
@@ -7951,7 +7974,8 @@ class _StaffDetailScreenState extends State<StaffDetailScreen> {
     );
   }
 
-  Widget _entryList(List<HistoryEntry> entries, String emptyLabel) {
+  Widget _entryList(List<HistoryEntry> entries, String emptyLabel,
+      Map<String, String> reportCategoryById) {
     if (entries.isEmpty) {
       return Text(emptyLabel, style: TextStyle(color: Colors.grey[500], fontSize: 12.5));
     }
@@ -7965,7 +7989,7 @@ class _StaffDetailScreenState extends State<StaffDetailScreen> {
               padding: EdgeInsets.symmetric(vertical: 8),
               child: Divider(height: 1, color: Colors.white10),
             ),
-          _StaffHistoryRow(entry: rows[i]),
+          _StaffHistoryRow(entry: rows[i], reportCategoryById: reportCategoryById),
         ],
       ],
     );
@@ -8011,6 +8035,13 @@ class _StaffDetailScreenState extends State<StaffDetailScreen> {
         .toList();
     final absentCount = monthlyCategoryCountForStaff(allReports, staffId, '勤怠(欠勤)');
     final lateCount = monthlyCategoryCountForStaff(allReports, staffId, '勤怠(遅刻)');
+    // sourceReportIdが紐づく報告(「対応する」経由の業務相談)で、元の報告のカテゴリを
+    // 一覧・詳細画面に注記するためのルックアップ。SvReportStoreは既に自チーム全報告を
+    // 購読済みのため新規Firestore読み取りは不要。
+    final reportCategoryById = {
+      for (final e in SvReportStore.instance.entries)
+        if (e.id != null) e.id!: e.category,
+    };
 
     final tasks = SentTaskStore.instance.entries.where((t) => t.staffId == staffId).toList();
     final linkedReports = taskLinkedReportsFrom(SvReportStore.instance.entries);
@@ -8040,7 +8071,7 @@ class _StaffDetailScreenState extends State<StaffDetailScreen> {
                         style: const TextStyle(
                             color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 10),
-                    _entryList(attendanceReports, '勤怠関連の報告はありません。'),
+                    _entryList(attendanceReports, '勤怠関連の報告はありません。', reportCategoryById),
                   ],
                 ),
               ),
@@ -8048,7 +8079,9 @@ class _StaffDetailScreenState extends State<StaffDetailScreen> {
               const Text('業務報告・相談履歴',
                   style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
-              _sectionCard(child: _entryList(workReports, '業務報告・相談の履歴はありません。')),
+              _sectionCard(
+                  child: _entryList(
+                      workReports, '業務報告・相談の履歴はありません。', reportCategoryById)),
               const SizedBox(height: 20),
               const Text('送ったタスクの状況',
                   style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
@@ -8065,10 +8098,13 @@ class _StaffDetailScreenState extends State<StaffDetailScreen> {
 
 class _StaffHistoryRow extends StatelessWidget {
   final HistoryEntry entry;
-  const _StaffHistoryRow({required this.entry});
+  final Map<String, String> reportCategoryById;
+  const _StaffHistoryRow({required this.entry, required this.reportCategoryById});
 
   @override
   Widget build(BuildContext context) {
+    final sourceReportCategory =
+        entry.sourceReportId != null ? reportCategoryById[entry.sourceReportId] : null;
     return Material(
       color: Colors.transparent,
       borderRadius: BorderRadius.circular(12),
@@ -8088,6 +8124,7 @@ class _StaffHistoryRow extends StatelessWidget {
                   action: entry.action,
                   history: entry.history,
                   reviewedAction: entry.reviewedAction,
+                  sourceReportCategory: sourceReportCategory,
                 ),
               ),
             ),
@@ -8107,6 +8144,14 @@ class _StaffHistoryRow extends StatelessWidget {
                           color: entry.color, fontSize: 12.5, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 2),
                   Text(entry.title, style: const TextStyle(color: Colors.white, fontSize: 13)),
+                  if (sourceReportCategory != null) ...[
+                    const SizedBox(height: 2),
+                    Text('元の報告:「$sourceReportCategory」への回答',
+                        style: const TextStyle(
+                            color: Color(0xFFA855F7),
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold)),
+                  ],
                 ],
               ),
             ),
