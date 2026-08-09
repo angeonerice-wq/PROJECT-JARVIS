@@ -1161,6 +1161,28 @@ class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
     final todayUpdateLabel =
         latestTodayUpdateLabel(SvReportStore.instance.entries.map((e) => e.timestamp));
 
+    // ホーム画面上部の通知バー。スタッフ側の`noticeCards`と対称の設計で、該当件数が
+    // 0の項目はカードごと非表示にする。件数・タップ先は下の「本日の状況」カードの
+    // 未確認/要対応スタットと同じもの(todayEntries基準)をそのまま使う。
+    final svNoticeCards = <Widget>[
+      if (unreviewedCount > 0)
+        _HomeNoticeCard(
+          icon: Icons.warning_amber,
+          iconColor: Colors.amber,
+          title: '未確認の報告',
+          count: unreviewedCount,
+          onTap: () => widget.onOpenSummaryTab?.call(SummaryReportTab.unreviewed),
+        ),
+      if (needsActionCount > 0)
+        _HomeNoticeCard(
+          icon: Icons.error_outline,
+          iconColor: Colors.redAccent,
+          title: '要対応の報告',
+          count: needsActionCount,
+          onTap: () => widget.onOpenSummaryTab?.call(SummaryReportTab.needsAction),
+        ),
+    ];
+
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Column(
@@ -1201,6 +1223,10 @@ class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
               style: TextStyle(color: Colors.grey[400], fontSize: 15),
             ),
           ),
+          if (svNoticeCards.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            Column(spacing: 12, children: svNoticeCards),
+          ],
           const SizedBox(height: 24),
           Container(
             padding: const EdgeInsets.all(16),
