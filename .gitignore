@@ -46,3 +46,6 @@ app.*.map.json
 
 # 初期化時の残骸(空のプレースホルダーのみ、入れ子のgitリポジトリを含む)
 /PROJECT-JARVIS/
+
+# Firebase CLIのローカルデプロイキャッシュ
+/.firebase/

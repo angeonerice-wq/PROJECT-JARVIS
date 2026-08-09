@@ -34,8 +34,11 @@ service cloud.firestore {
                     && request.resource.data.title is string
                     && request.resource.data.timestamp is timestamp;
 
+      // SVが読めるのは「自分のチーム(supervisorId==自分)」のreportsのみに限定する。
+      // 本人が自分の報告を読める条件はこれまでと変更なし。
       allow read: if request.auth != null &&
-        (resource.data.staffId == request.auth.uid || isSv());
+        (resource.data.staffId == request.auth.uid ||
+         (isSv() && resource.data.supervisorId == request.auth.uid));
 
       allow update: if isSv() && isValidReview();
 
