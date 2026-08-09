@@ -598,6 +598,18 @@ bool _isToday(DateTime dt) {
   return dt.year == now.year && dt.month == now.month && dt.day == now.day;
 }
 
+/// 「本日の状況」カードの最終更新表示用。渡されたタイムスタンプ群のうち、
+/// 本日(0時以降)かつ最も新しいものを"HH:mm"形式で返す(該当がなければnull)。
+String? latestTodayUpdateLabel(Iterable<DateTime> timestamps) {
+  DateTime? latest;
+  for (final ts in timestamps) {
+    if (!_isToday(ts)) continue;
+    if (latest == null || ts.isAfter(latest)) latest = ts;
+  }
+  if (latest == null) return null;
+  return '${latest.hour.toString().padLeft(2, '0')}:${latest.minute.toString().padLeft(2, '0')}';
+}
+
 /// ホーム画面上部のメニューアイコン+通知ベル。スタッフ用・SV用の両ホーム画面から
 /// 共用する(ベルのバッジ件数計算・タップ遷移を1箇所にまとめて重複を避ける)。
 class _HomeHeaderBar extends StatefulWidget {
@@ -752,6 +764,14 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
     final unconfirmedAnnouncementCount = ReceivedAnnouncementStore.instance.entries
         .where((a) => !a.isConfirmed)
         .length;
+
+    // 「本日の状況」カードの最終更新時刻。このカードが参照している3つのデータソース
+    // (自分の報告/割り当てられたタスク/受信したお知らせ)のうち、本日分の最新timestampを表示する。
+    final todayUpdateLabel = latestTodayUpdateLabel([
+      ...entries.map((e) => e.timestamp),
+      ...AssignedTaskStore.instance.entries.map((t) => t.createdAt),
+      ...ReceivedAnnouncementStore.instance.entries.map((a) => a.createdAt),
+    ]);
 
     // ホーム画面のお知らせ・タスクセクションに表示するカード。該当件数が0のものは
     // 含めない(カードごと非表示にするため)。
@@ -971,7 +991,10 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
                                 fontWeight: FontWeight.bold)),
                         Row(
                           children: [
-                            Text('最終更新 09:30',
+                            Text(
+                                todayUpdateLabel != null
+                                    ? '最終更新 $todayUpdateLabel'
+                                    : '最終更新 -',
                                 style: TextStyle(
                                     color: Colors.grey[500], fontSize: 12)),
                             const SizedBox(width: 4),
@@ -1133,6 +1156,11 @@ class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
             e.reviewedAction == SuggestedAction.escalate)
         .length;
 
+    // 「本日の状況」カードの最終更新時刻。このカードの4項目は全てSvReportStore
+    // (自チームのreports)から算出しているため、その本日分の最新timestampを表示する。
+    final todayUpdateLabel =
+        latestTodayUpdateLabel(SvReportStore.instance.entries.map((e) => e.timestamp));
+
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       child: Column(
@@ -1194,7 +1222,10 @@ class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
                             fontWeight: FontWeight.bold)),
                     Row(
                       children: [
-                        Text('最終更新 09:30',
+                        Text(
+                            todayUpdateLabel != null
+                                ? '最終更新 $todayUpdateLabel'
+                                : '最終更新 -',
                             style: TextStyle(color: Colors.grey[500], fontSize: 12)),
                         const SizedBox(width: 4),
                         Icon(Icons.refresh, color: Colors.grey[500], size: 14),
