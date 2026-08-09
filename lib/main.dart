@@ -104,6 +104,7 @@ class UserSession extends ChangeNotifier {
   UserRole? role;
   String? displayName;
   String? storeId;
+  String? supervisorId;
 
   void _onAuthChanged(User? user) {
     _profileSub?.cancel();
@@ -111,6 +112,7 @@ class UserSession extends ChangeNotifier {
       role = null;
       displayName = null;
       storeId = null;
+      supervisorId = null;
       notifyListeners();
       return;
     }
@@ -120,6 +122,7 @@ class UserSession extends ChangeNotifier {
       role = _parseUserRole(data?['role']);
       displayName = data?['displayName'] as String?;
       storeId = data?['storeId'] as String?;
+      supervisorId = data?['supervisorId'] as String?;
       notifyListeners();
     });
   }
@@ -2037,6 +2040,8 @@ class HistoryStore extends ChangeNotifier {
 
   /// Firestoreの`reports`コレクションへ書き込む。staffIdはログイン中ユーザーから付与する。
   /// storeIdはSVの全件閲覧機能を実装する際に使う予約フィールド(現時点では未使用)。
+  /// supervisorIdは投稿者自身の`users`ドキュメントから取得した値をそのままコピーする
+  /// (SVがチーム単位でreportsを絞り込むためのクエリ用、非正規化フィールド)。
   ///
   /// entry.id(呼び出し側で事前に払い出したドキュメントID)に対して`set`する。
   /// オフライン時、Firestoreはこの書き込みをキューイングして待ち続け例外を投げないため、
@@ -2053,6 +2058,7 @@ class HistoryStore extends ChangeNotifier {
       'staffId': uid,
       'staffName': UserSession.instance.displayName,
       'storeId': null,
+      'supervisorId': UserSession.instance.supervisorId,
     }).timeout(const Duration(seconds: 10));
   }
 
@@ -2075,9 +2081,9 @@ class HistoryStore extends ChangeNotifier {
   }
 }
 
-/// SVログイン時に全スタッフの`reports`を購読するストア。
-/// role="sv"でないユーザーで全件クエリを投げるとセキュリティルールにより拒否されるため、
-/// UserSessionでSVと確認できてから購読を開始する。
+/// SVログイン時に自分のチーム(supervisorId == 自分のuid)のスタッフの`reports`を
+/// 購読するストア。role="sv"でないユーザーで全件クエリを投げるとセキュリティルールにより
+/// 拒否されるため、UserSessionでSVと確認できてから購読を開始する。
 class SvReportStore extends ChangeNotifier {
   SvReportStore._() {
     UserSession.instance.addListener(_onSessionChanged);
@@ -2098,7 +2104,8 @@ class SvReportStore extends ChangeNotifier {
     _isSv = nowSv;
     _entriesSub?.cancel();
 
-    if (!nowSv) {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (!nowSv || uid == null) {
       _entries = [];
       notifyListeners();
       return;
@@ -2106,6 +2113,7 @@ class SvReportStore extends ChangeNotifier {
 
     _entriesSub = _firestore
         .collection('reports')
+        .where('supervisorId', isEqualTo: uid)
         .orderBy('timestamp', descending: true)
         .snapshots()
         .listen((snapshot) {
