@@ -4915,12 +4915,16 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
     super.initState();
     UserSession.instance.addListener(_onChanged);
     SvReportStore.instance.addListener(_onChanged);
+    HistoryStore.instance.addListener(_onChanged);
+    AssignedTaskStore.instance.addListener(_onChanged);
   }
 
   @override
   void dispose() {
     UserSession.instance.removeListener(_onChanged);
     SvReportStore.instance.removeListener(_onChanged);
+    HistoryStore.instance.removeListener(_onChanged);
+    AssignedTaskStore.instance.removeListener(_onChanged);
     super.dispose();
   }
 
@@ -4982,6 +4986,22 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
     return '${avgMinutes ~/ 60}時間${avgMinutes % 60}分';
   }
 
+  /// スタッフ向け指標。自分の報告について、提出(timestamp)からSVが何らかの対応
+  /// (承認/再調整依頼/エスカレーションいずれか、reviewedAt基準)をするまでの平均時間。
+  /// SV側の_avgResponseTimeLabel(承認のみ・approvedAt基準)とは意図的に別ロジックにしている
+  /// (承認のみに絞るとスタッフ視点では母数が少なすぎるため)。対応済みが1件もなければ「-」。
+  String _staffAvgResponseTimeLabel(List<HistoryEntry> entries) {
+    final reviewed = entries.where((e) => e.reviewedAt != null).toList();
+    if (reviewed.isEmpty) return '-';
+    final totalSeconds = reviewed.fold<int>(
+      0,
+      (acc, e) => acc + e.reviewedAt!.difference(e.timestamp).inSeconds,
+    );
+    final avgMinutes = (totalSeconds / reviewed.length / 60).round();
+    if (avgMinutes < 60) return '$avgMinutes分';
+    return '${avgMinutes ~/ 60}時間${avgMinutes % 60}分';
+  }
+
   @override
   Widget build(BuildContext context) {
     final isSv = UserSession.instance.role == UserRole.sv;
@@ -4998,10 +5018,29 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
         ? 1
         : breakdown.map((e) => e.count).reduce((a, b) => a > b ? a : b);
 
-    final weeklyCountLabel = isSv ? '${_weeklyCount(svEntries)}件' : '35件';
-    final approveRateLabel = isSv ? _approveRateLabel(svEntries) : '74%';
-    final escalateCountLabel = isSv ? '${_escalateCount(svEntries)}件' : '4件';
-    final avgResponseTimeLabel = isSv ? _avgResponseTimeLabel(svEntries) : '3分';
+    // スタッフ向け指標(SV向けとは対象データ・意味が異なる独立した算出)。
+    final staffEntries = HistoryStore.instance.entries;
+    final completedTaskIds = completedTaskIdsFrom(staffEntries);
+    final incompleteTaskCount = AssignedTaskStore.instance.entries
+        .where((t) => !completedTaskIds.contains(t.id))
+        .length;
+    final pendingApprovalCount = staffEntries.where((e) => e.reviewedAt == null).length;
+
+    final (statCard1Label, statCard1Value, statCard1Icon, statCard1Color) = isSv
+        ? ('今週の対応件数', '${_weeklyCount(svEntries)}件', Icons.inbox, const Color(0xFF3B82F6))
+        : ('未対応タスク数', '$incompleteTaskCount件', Icons.assignment_late, const Color(0xFFF97316));
+
+    final (statCard2Label, statCard2Value, statCard2Icon, statCard2Color) = isSv
+        ? ('承認のみでOK率', _approveRateLabel(svEntries), Icons.check_circle, const Color(0xFF22C55E))
+        : ('承認待ち数', '$pendingApprovalCount件', Icons.hourglass_empty, Colors.amber);
+
+    final (statCard3Label, statCard3Value, statCard3Icon, statCard3Color) = isSv
+        ? ('要エスカレーション', '${_escalateCount(svEntries)}件', Icons.priority_high, const Color(0xFFEF4444))
+        : ('平均対応時間', _staffAvgResponseTimeLabel(staffEntries), Icons.timer, const Color(0xFF06B6D4));
+
+    final (statCard4Label, statCard4Value, statCard4Icon, statCard4Color) = isSv
+        ? ('平均対応時間', _avgResponseTimeLabel(svEntries), Icons.timer, const Color(0xFF06B6D4))
+        : ('送付件数', '${_weeklyCount(staffEntries)}件', Icons.send, const Color(0xFF3B82F6));
 
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
@@ -5031,19 +5070,19 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
             children: [
               Expanded(
                 child: _SummaryStatCard(
-                  label: '今週の対応件数',
-                  value: weeklyCountLabel,
-                  icon: Icons.inbox,
-                  color: const Color(0xFF3B82F6),
+                  label: statCard1Label,
+                  value: statCard1Value,
+                  icon: statCard1Icon,
+                  color: statCard1Color,
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: _SummaryStatCard(
-                  label: '承認のみでOK率',
-                  value: approveRateLabel,
-                  icon: Icons.check_circle,
-                  color: const Color(0xFF22C55E),
+                  label: statCard2Label,
+                  value: statCard2Value,
+                  icon: statCard2Icon,
+                  color: statCard2Color,
                 ),
               ),
             ],
@@ -5053,19 +5092,19 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
             children: [
               Expanded(
                 child: _SummaryStatCard(
-                  label: '要エスカレーション',
-                  value: escalateCountLabel,
-                  icon: Icons.priority_high,
-                  color: const Color(0xFFEF4444),
+                  label: statCard3Label,
+                  value: statCard3Value,
+                  icon: statCard3Icon,
+                  color: statCard3Color,
                 ),
               ),
               const SizedBox(width: 12),
               Expanded(
                 child: _SummaryStatCard(
-                  label: '平均対応時間',
-                  value: avgResponseTimeLabel,
-                  icon: Icons.timer,
-                  color: const Color(0xFF06B6D4),
+                  label: statCard4Label,
+                  value: statCard4Value,
+                  icon: statCard4Icon,
+                  color: statCard4Color,
                 ),
               ),
             ],
