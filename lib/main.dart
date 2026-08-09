@@ -1006,6 +1006,14 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
                             label: '要対応',
                             value: '$needsActionCount件',
                             onTap: widget.onOpenHistoryTab),
+                        StatItem(
+                            icon: Icons.campaign_outlined,
+                            color: const Color(0xFF06B6D4),
+                            label: 'お知らせ',
+                            value: '$unconfirmedAnnouncementCount件',
+                            onTap: () => Navigator.of(context).push(
+                                  MaterialPageRoute(builder: (_) => const AnnouncementsScreen()),
+                                )),
                       ],
                     ),
                   ],
@@ -4913,6 +4921,13 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
   Widget build(BuildContext context) {
     final isSv = UserSession.instance.role == UserRole.sv;
     final svEntries = SvReportStore.instance.entries;
+    // sourceReportIdが紐づく報告(「対応する」経由の業務相談)で、元の報告のカテゴリを
+    // 一覧・詳細画面に注記するためのルックアップ。新規クエリは不要(svEntriesは
+    // 既に全報告を購読済み)。
+    final reportCategoryById = {
+      for (final e in svEntries)
+        if (e.id != null) e.id!: e.category,
+    };
     final breakdown = isSv ? _realBreakdown(svEntries) : _dummyBreakdown;
     final maxCount = breakdown.isEmpty
         ? 1
@@ -5111,6 +5126,9 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
                                 action: e.action,
                                 history: e.history,
                                 reviewedAction: e.reviewedAction,
+                                sourceReportCategory: e.sourceReportId != null
+                                    ? reportCategoryById[e.sourceReportId]
+                                    : null,
                               ),
                             ),
                           ),
@@ -5154,6 +5172,16 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
                                       style: const TextStyle(color: Colors.white, fontSize: 13.5),
                                       maxLines: 2,
                                       overflow: TextOverflow.ellipsis),
+                                  if (e.sourceReportId != null &&
+                                      reportCategoryById[e.sourceReportId] != null) ...[
+                                    const SizedBox(height: 4),
+                                    Text(
+                                        '元の報告:「${reportCategoryById[e.sourceReportId]}」への回答',
+                                        style: const TextStyle(
+                                            color: Color(0xFFA855F7),
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.bold)),
+                                  ],
                                   const SizedBox(height: 4),
                                   Text(
                                       '担当: ${e.staffName ?? shortStaffId(e.staffId)}',
@@ -8281,6 +8309,7 @@ class SvReportSummary {
   final SuggestedAction action;
   final List<ChatMessage> history;
   final SuggestedAction? reviewedAction;
+  final String? sourceReportCategory;
 
   const SvReportSummary({
     this.id,
@@ -8292,6 +8321,7 @@ class SvReportSummary {
     required this.action,
     required this.history,
     this.reviewedAction,
+    this.sourceReportCategory,
   });
 }
 
@@ -8426,6 +8456,14 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
                           const SizedBox(height: 2),
                           Text(s.time,
                               style: TextStyle(color: Colors.grey[500], fontSize: 12.5)),
+                          if (s.sourceReportCategory != null) ...[
+                            const SizedBox(height: 4),
+                            Text('元の報告:「${s.sourceReportCategory}」への回答',
+                                style: const TextStyle(
+                                    color: Color(0xFFA855F7),
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold)),
+                          ],
                         ],
                       ),
                     ),
