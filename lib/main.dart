@@ -869,7 +869,7 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
                 children: [
                   CategoryCard(
                     title: '勤怠',
-                    subtitle: '欠勤・遅刻の\n連絡はこちら',
+                    titleFontSize: 14,
                     icon: Icons.bedtime,
                     color: const Color(0xFF3B82F6),
                     onTap: () {
@@ -882,7 +882,7 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
                   ),
                   CategoryCard(
                     title: '業務報告',
-                    subtitle: '巡回・作業の\n報告はこちら',
+                    titleFontSize: 14,
                     icon: Icons.storefront,
                     color: const Color(0xFF22C55E),
                     onTap: () {
@@ -895,7 +895,7 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
                   ),
                   CategoryCard(
                     title: '業務相談',
-                    subtitle: '業務の相談や\n確認はこちら',
+                    titleFontSize: 14,
                     icon: Icons.chat_bubble,
                     color: const Color(0xFFA855F7),
                     onTap: () {
@@ -908,7 +908,7 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
                   ),
                   CategoryCard(
                     title: 'タスク完了',
-                    subtitle: '業務やタスクの\n完了報告はこちら',
+                    titleFontSize: 14,
                     icon: Icons.check_circle_outline,
                     color: const Color(0xFFF97316),
                     onTap: () {
@@ -921,7 +921,7 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
                   ),
                   CategoryCard(
                     title: 'その他',
-                    subtitle: '上記以外の\nご連絡はこちら',
+                    titleFontSize: 14,
                     icon: Icons.help_outline,
                     color: const Color(0xFF64748B),
                     onTap: () {
@@ -934,7 +934,7 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
                   ),
                   CategoryCard(
                     title: '周知確認',
-                    subtitle: '重要なお知らせの\n確認はこちら',
+                    titleFontSize: 14,
                     icon: Icons.campaign,
                     color: const Color(0xFF06B6D4),
                     onTap: () {
