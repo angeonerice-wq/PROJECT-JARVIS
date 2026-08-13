@@ -930,14 +930,14 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
                     },
                   ),
                   CategoryCard(
-                    title: 'タスク完了',
+                    title: '業務完了​確認',
                     titleFontSize: 14,
-                    icon: Icons.check_circle_outline,
-                    color: const Color(0xFFF97316),
+                    icon: Icons.fact_check,
+                    color: const Color(0xFF06B6D4),
                     onTap: () {
                       Navigator.of(context).push(
                         MaterialPageRoute(
-                          builder: (_) => const TaskCompletionChatScreen(),
+                          builder: (_) => const BusinessCompletionChatScreen(),
                         ),
                       );
                     },
@@ -2051,6 +2051,8 @@ void showComingSoonDialog(BuildContext context, String label) {
       return (icon: Icons.chat_bubble, color: const Color(0xFFA855F7));
     case 'タスク完了':
       return (icon: Icons.check_circle_outline, color: const Color(0xFFF97316));
+    case '業務完了確認':
+      return (icon: Icons.fact_check, color: const Color(0xFF06B6D4));
     case 'その他':
       return (icon: Icons.help_outline, color: const Color(0xFF64748B));
     case '周知確認':
@@ -3170,7 +3172,13 @@ class _WorkReportData {
 }
 
 class WorkReportChatScreen extends StatefulWidget {
-  const WorkReportChatScreen({super.key});
+  /// 業務完了確認の「特記事項あり」から遷移した場合に、どの完了確認についての
+  /// 業務報告かを引き継ぐための任意パラメータ(ConsultationChatScreenの
+  /// sourceTaskId/sourceAnnouncementIdと同じ形)。
+  final String? sourceReportId;
+  final String? sourceReportTitle;
+
+  const WorkReportChatScreen({super.key, this.sourceReportId, this.sourceReportTitle});
   @override
   State<WorkReportChatScreen> createState() => _WorkReportChatScreenState();
 }
@@ -3194,6 +3202,9 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
   @override
   void initState() {
     super.initState();
+    if (widget.sourceReportTitle != null) {
+      _addJarvis('「${widget.sourceReportTitle}」の特記事項についてですね。');
+    }
     _addJarvis('お疲れ様です。どちらの店舗の報告ですか？');
     _lastAskedStoreName = true;
   }
@@ -3334,6 +3345,7 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
         if (_data.hasIssue == true) MapEntry('深刻度', _data.severity ?? '-'),
       ],
       history: List.unmodifiable(_messages),
+      sourceReportId: widget.sourceReportId,
     );
 
     await _submitEntry(entry);
@@ -3355,6 +3367,16 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
         _pendingEntry = null;
       });
       _addJarvis('ありがとうございます。内容を確認し、SVに共有しました。');
+      // 業務完了確認の「特記事項あり」から遷移してきた場合は、ConsultationChatScreenと
+      // 同じく少し間を置いて元の完了確認より前の画面まで自動で戻る。通常のホーム画面からの
+      // 業務報告(紐づけなし)は、このままチャット画面に留まる既存の挙動を変えない。
+      if (widget.sourceReportId != null) {
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+        if (!mounted) return;
+        Navigator.of(context)
+          ..pop()
+          ..pop();
+      }
     } catch (_) {
       BeforeUnloadGuard.disable();
       if (!mounted) return;
@@ -3816,47 +3838,48 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
 
 
 
-class _TaskCompletionData {
-  String? taskName;
-  String? verification;
-  bool? hasExpense;
-  String? expenseCategory; // 交通費 / ロッカー代 / 駐車場代 / 印刷代 / その他
-  String? expenseAmount; // 金額(数字)
+class _BusinessCompletionData {
+  String? completionStatus; // 'はい' / '一部未完了'
+  String? incompleteDetail; // 一部未完了の場合の自由記述(内容)
+  bool? hasNote; // 特記事項の有無
+  String? scheduleChange; // '変更なし' / '変更あり'
+  String? scheduleChangeDetail; // 変更ありの場合の自由記述
 
-  bool get hasTaskName => taskName != null && taskName!.trim().isNotEmpty;
-  bool get hasVerification => verification != null && verification!.trim().isNotEmpty;
-  bool get expenseKnown => hasExpense != null;
-  bool get expenseCategoryOk => hasExpense == false || expenseCategory != null;
-  bool get expenseAmountOk =>
-      hasExpense == false || (expenseAmount != null && expenseAmount!.trim().isNotEmpty);
+  bool get hasCompletionStatus => completionStatus != null;
+  bool get incompleteDetailOk =>
+      completionStatus != '一部未完了' ||
+      (incompleteDetail != null && incompleteDetail!.trim().isNotEmpty);
+  bool get hasNoteKnown => hasNote != null;
+  bool get hasScheduleChangeKnown => scheduleChange != null;
+  bool get scheduleChangeDetailOk =>
+      scheduleChange != '変更あり' ||
+      (scheduleChangeDetail != null && scheduleChangeDetail!.trim().isNotEmpty);
   bool get isComplete =>
-      hasTaskName && hasVerification && expenseKnown && expenseCategoryOk && expenseAmountOk;
-
-  int? get expenseAmountValue {
-    if (expenseAmount == null) return null;
-    final match = RegExp(r'\d+').firstMatch(expenseAmount!.replaceAll(',', ''));
-    return match != null ? int.tryParse(match.group(0)!) : null;
-  }
+      hasCompletionStatus &&
+      incompleteDetailOk &&
+      hasNoteKnown &&
+      hasScheduleChangeKnown &&
+      scheduleChangeDetailOk;
 }
 
-class TaskCompletionChatScreen extends StatefulWidget {
-  const TaskCompletionChatScreen({super.key});
+class BusinessCompletionChatScreen extends StatefulWidget {
+  const BusinessCompletionChatScreen({super.key});
   @override
-  State<TaskCompletionChatScreen> createState() => _TaskCompletionChatScreenState();
+  State<BusinessCompletionChatScreen> createState() => _BusinessCompletionChatScreenState();
 }
 
-class _TaskCompletionChatScreenState extends State<TaskCompletionChatScreen> {
+class _BusinessCompletionChatScreenState extends State<BusinessCompletionChatScreen> {
   final List<ChatMessage> _messages = [];
   final TextEditingController _controller = TextEditingController();
   final ScrollController _scrollController = ScrollController();
-  final _TaskCompletionData _data = _TaskCompletionData();
+  final _BusinessCompletionData _data = _BusinessCompletionData();
 
   bool _isComplete = false;
-  bool _awaitingExpenseChoice = false;
-  bool _awaitingExpenseCategoryChoice = false;
-  bool _lastAskedTaskName = false;
-  bool _lastAskedVerification = false;
-  bool _lastAskedExpenseAmount = false;
+  bool _awaitingCompletionChoice = false;
+  bool _awaitingNoteChoice = false;
+  bool _awaitingScheduleChoice = false;
+  bool _lastAskedIncompleteDetail = false;
+  bool _lastAskedScheduleDetail = false;
   bool _isSaving = false;
   bool _saveFailed = false;
   HistoryEntry? _pendingEntry;
@@ -3864,8 +3887,8 @@ class _TaskCompletionChatScreenState extends State<TaskCompletionChatScreen> {
   @override
   void initState() {
     super.initState();
-    _addJarvis('お疲れ様です。完了したタスクの内容を教えてください。');
-    _lastAskedTaskName = true;
+    _addJarvis('お疲れ様です。今日の業務は完了しましたか？');
+    _awaitingCompletionChoice = true;
   }
 
   void _addJarvis(String text) {
@@ -3896,117 +3919,116 @@ class _TaskCompletionChatScreenState extends State<TaskCompletionChatScreen> {
     _addUser(text);
     _controller.clear();
 
-    if (_lastAskedTaskName) {
-      _data.taskName = text;
-    } else if (_lastAskedVerification) {
-      _data.verification = text;
-    } else if (_lastAskedExpenseAmount) {
-      _data.expenseAmount = text;
+    if (_lastAskedIncompleteDetail) {
+      _data.incompleteDetail = text;
+    } else if (_lastAskedScheduleDetail) {
+      _data.scheduleChangeDetail = text;
     }
     _advance();
   }
 
-  void _selectExpense(bool hasExpense, String label) {
-    if (!_awaitingExpenseChoice) return;
+  void _selectCompletionStatus(String label) {
+    if (!_awaitingCompletionChoice) return;
     _addUser(label);
-    _data.hasExpense = hasExpense;
-    setState(() => _awaitingExpenseChoice = false);
+    _data.completionStatus = label;
+    setState(() => _awaitingCompletionChoice = false);
     _advance();
   }
 
-  void _selectExpenseCategory(String label) {
-    if (!_awaitingExpenseCategoryChoice) return;
+  void _selectNote(bool hasNote, String label) {
+    if (!_awaitingNoteChoice) return;
     _addUser(label);
-    _data.expenseCategory = label;
-    setState(() => _awaitingExpenseCategoryChoice = false);
+    _data.hasNote = hasNote;
+    setState(() => _awaitingNoteChoice = false);
+    _advance();
+  }
+
+  void _selectScheduleChange(String label) {
+    if (!_awaitingScheduleChoice) return;
+    _addUser(label);
+    _data.scheduleChange = label;
+    setState(() => _awaitingScheduleChoice = false);
     _advance();
   }
 
   void _advance() {
-    _lastAskedTaskName = false;
-    _lastAskedVerification = false;
-    _lastAskedExpenseAmount = false;
+    _lastAskedIncompleteDetail = false;
+    _lastAskedScheduleDetail = false;
 
-    if (!_data.hasTaskName) {
-      _lastAskedTaskName = true;
-      _addJarvis('完了したタスクの内容を教えてください。(例:棚卸、緊急ヒアリング対応 など)');
+    if (!_data.hasCompletionStatus) {
+      _addJarvis('今日の業務は完了しましたか？');
+      setState(() => _awaitingCompletionChoice = true);
       return;
     }
-    if (!_data.hasVerification) {
-      // 「完了しました」の一言だけを鵜呑みにせず、必ず具体的な内容を確認する
-      _lastAskedVerification = true;
-      _addJarvis('具体的に何を対応されましたか？完了確認のため、詳しく教えてください。');
+    if (!_data.incompleteDetailOk) {
+      _lastAskedIncompleteDetail = true;
+      _addJarvis('未完了の内容を教えてください。');
       return;
     }
-    // 自己申告を鵜呑みにしない:レベル2として、曖昧な回答には深掘りする。
-    // 1回目は素直に聞き直し、2回目もまだ曖昧なら聞き方を変え、それでもダメならSVに委ねる。
-    if (_verificationGuidanceAttempts < 2 && isVagueAnswer(_data.verification ?? '')) {
-      _verificationGuidanceAttempts++;
-      _data.verification = null;
-      _lastAskedVerification = true;
-      if (_verificationGuidanceAttempts == 1) {
-        _addJarvis('恐れ入りますが、「完了しました」だけでは判断ができません。具体的に何を確認・対応したか教えていただけますか？');
+    // 自己申告を鵜呑みにしない:内容が曖昧な場合は深掘りする(レベル2:AIが誘導)。
+    // 1回目は素直に聞き直し、2回目もまだ曖昧なら聞き方を変える。
+    if (_data.completionStatus == '一部未完了' &&
+        _incompleteDetailGuidanceAttempts < 2 &&
+        isVagueAnswer(_data.incompleteDetail ?? '')) {
+      _incompleteDetailGuidanceAttempts++;
+      _data.incompleteDetail = null;
+      _lastAskedIncompleteDetail = true;
+      if (_incompleteDetailGuidanceAttempts == 1) {
+        _addJarvis('恐れ入りますが、もう少し具体的に未完了の内容を教えていただけますか？');
       } else {
-        _addJarvis('重ねて恐れ入ります。例えば「POPを2箇所に設置し写真を撮影した」のように、具体的な作業内容を教えてください。');
+        _addJarvis('重ねて恐れ入ります。何が、なぜ完了しなかったか、わかる範囲で構いませんので教えてください。');
       }
       return;
     }
-    if (!_data.expenseKnown) {
-      _addJarvis('経費は発生しましたか？(交通費・ロッカー代・駐車場代・印刷代など)');
-      setState(() => _awaitingExpenseChoice = true);
+    if (!_data.hasNoteKnown) {
+      _addJarvis('特記事項はありますか？');
+      setState(() => _awaitingNoteChoice = true);
       return;
     }
-    if (!_data.expenseCategoryOk) {
-      _addJarvis('経費の種類を教えてください。');
-      setState(() => _awaitingExpenseCategoryChoice = true);
+    if (!_data.hasScheduleChangeKnown) {
+      _addJarvis('明日の予定に変更はありますか？');
+      setState(() => _awaitingScheduleChoice = true);
       return;
     }
-    if (!_data.expenseAmountOk) {
-      _lastAskedExpenseAmount = true;
-      _addJarvis('金額を教えてください。(例:800円)');
+    if (!_data.scheduleChangeDetailOk) {
+      _lastAskedScheduleDetail = true;
+      _addJarvis('変更内容を教えてください。');
       return;
     }
     _finalize();
   }
 
-  int _verificationGuidanceAttempts = 0;
+  int _incompleteDetailGuidanceAttempts = 0;
 
   Future<void> _finalize() async {
-    final verification = _data.verification ?? '';
-    // レベル2で一度深掘りしても、なお曖昧な場合はレベル3(SVの直接介入)へ
-    final stillVague = isVagueAnswer(verification);
-    final amount = _data.expenseAmountValue;
-
     final SuggestedAction action;
-    if (stillVague) {
-      action = SuggestedAction.escalate;
-    } else if (_data.hasExpense == true && amount != null && amount >= 10000) {
-      // 高額な経費(交通費・ロッカー代・駐車場代・印刷代の通常範囲を超える)はエスカレーション
-      action = SuggestedAction.escalate;
-    } else if (_data.hasExpense == true && amount != null && amount >= 3000) {
+    if (_data.completionStatus == '一部未完了') {
+      // 未完了分が残っているため、フォローが必要な状態としてSVの要対応に残す
       action = SuggestedAction.needsReschedule;
-    } else if (_data.hasExpense == true) {
-      // 交通費・ロッカー代など、日常的な少額経費は承認のみでOK
-      action = SuggestedAction.approveOnly;
+    } else if (_data.hasNote == true) {
+      // 特記事項ありの場合、紐づく業務報告が未確認のうちはこの完了確認自体も
+      // SV側の要対応に残るようにする(業務報告だけでなく完了確認も見落とされないため)
+      action = SuggestedAction.needsReschedule;
     } else {
       action = SuggestedAction.approveOnly;
     }
     setState(() => _isComplete = true);
 
     final entry = HistoryEntry(
-      id: PendingSubmissionRegistry.instance.claim('タスク完了'),
-      category: 'タスク完了',
-      title: _data.taskName ?? '-',
+      id: PendingSubmissionRegistry.instance.claim('業務完了確認'),
+      category: '業務完了確認',
+      title: _data.completionStatus == '一部未完了'
+          ? (_data.incompleteDetail ?? '一部未完了')
+          : '本日の業務完了確認',
       action: action,
       fields: [
-        MapEntry('タスク', _data.taskName ?? '-'),
-        MapEntry('完了内容', _data.verification ?? '-'),
-        MapEntry(
-          '経費',
-          _data.hasExpense == true
-              ? '${_data.expenseCategory ?? ''} ${_data.expenseAmount ?? ''}'
-              : 'なし',
-        ),
+        MapEntry('完了状況', _data.completionStatus ?? '-'),
+        if (_data.completionStatus == '一部未完了')
+          MapEntry('未完了の内容', _data.incompleteDetail ?? '-'),
+        MapEntry('特記事項', _data.hasNote == true ? 'あり' : 'なし'),
+        MapEntry('明日の予定変更', _data.scheduleChange ?? '-'),
+        if (_data.scheduleChange == '変更あり')
+          MapEntry('変更内容', _data.scheduleChangeDetail ?? '-'),
       ],
       history: List.unmodifiable(_messages),
     );
@@ -4030,6 +4052,22 @@ class _TaskCompletionChatScreenState extends State<TaskCompletionChatScreen> {
         _pendingEntry = null;
       });
       _addJarvis('ありがとうございます。内容を確認し、SVに共有しました。');
+      // 特記事項ありの場合は、詳細を業務報告として記録してもらうためWorkReportChatScreenへ
+      // 遷移する(entry.idをsourceReportIdとして紐づける)。ConsultationChatScreenの
+      // 「対応する」導線と同じく、WorkReportChatScreen側が完了時にこの画面より前まで
+      // 自動で戻る(pop2回)ため、ここではpushするだけでよい。
+      if (_data.hasNote == true) {
+        await Future<void>.delayed(const Duration(milliseconds: 700));
+        if (!mounted) return;
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => WorkReportChatScreen(
+              sourceReportId: entry.id,
+              sourceReportTitle: '業務完了確認',
+            ),
+          ),
+        );
+      }
     } catch (_) {
       BeforeUnloadGuard.disable();
       if (!mounted) return;
@@ -4056,13 +4094,13 @@ class _TaskCompletionChatScreenState extends State<TaskCompletionChatScreen> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF0A0E1A),
         elevation: 0,
-        title: const Text('タスク完了', style: TextStyle(color: Colors.white, fontSize: 17)),
+        title: const Text('業務完了確認', style: TextStyle(color: Colors.white, fontSize: 17)),
         iconTheme: const IconThemeData(color: Colors.white70),
       ),
       body: SafeArea(
         child: Column(
           children: [
-            const _ChatGuidanceBanner(text: 'ここは業務・タスクの完了報告のチャット欄です。'),
+            const _ChatGuidanceBanner(text: 'ここは本日の業務完了確認用のチャット欄です。'),
             Expanded(
               child: ListView.builder(
                 controller: _scrollController,
@@ -4071,7 +4109,32 @@ class _TaskCompletionChatScreenState extends State<TaskCompletionChatScreen> {
                 itemBuilder: (context, index) => ChatBubble(message: _messages[index]),
               ),
             ),
-            if (_awaitingExpenseChoice)
+            if (_awaitingCompletionChoice)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: ChoiceButton(
+                        label: 'はい',
+                        icon: Icons.check_circle,
+                        color: const Color(0xFF22C55E),
+                        onTap: () => _selectCompletionStatus('はい'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: ChoiceButton(
+                        label: '一部未完了',
+                        icon: Icons.warning_amber,
+                        color: const Color(0xFFF97316),
+                        onTap: () => _selectCompletionStatus('一部未完了'),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else if (_awaitingNoteChoice)
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
                 child: Row(
@@ -4079,9 +4142,9 @@ class _TaskCompletionChatScreenState extends State<TaskCompletionChatScreen> {
                     Expanded(
                       child: ChoiceButton(
                         label: 'あり',
-                        icon: Icons.receipt_long,
-                        color: const Color(0xFFF97316),
-                        onTap: () => _selectExpense(true, 'あり'),
+                        icon: Icons.flag,
+                        color: const Color(0xFFA855F7),
+                        onTap: () => _selectNote(true, 'あり'),
                       ),
                     ),
                     const SizedBox(width: 10),
@@ -4090,62 +4153,32 @@ class _TaskCompletionChatScreenState extends State<TaskCompletionChatScreen> {
                         label: 'なし',
                         icon: Icons.check_circle,
                         color: const Color(0xFF22C55E),
-                        onTap: () => _selectExpense(false, 'なし'),
+                        onTap: () => _selectNote(false, 'なし'),
                       ),
                     ),
                   ],
                 ),
               )
-            else if (_awaitingExpenseCategoryChoice)
+            else if (_awaitingScheduleChoice)
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
-                child: Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
+                child: Row(
                   children: [
-                    SizedBox(
-                      width: 150,
+                    Expanded(
                       child: ChoiceButton(
-                        label: '交通費',
-                        icon: Icons.train,
+                        label: '変更なし',
+                        icon: Icons.check_circle,
+                        color: const Color(0xFF22C55E),
+                        onTap: () => _selectScheduleChange('変更なし'),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: ChoiceButton(
+                        label: '変更あり',
+                        icon: Icons.event,
                         color: const Color(0xFF3B82F6),
-                        onTap: () => _selectExpenseCategory('交通費'),
-                      ),
-                    ),
-                    SizedBox(
-                      width: 150,
-                      child: ChoiceButton(
-                        label: 'ロッカー代',
-                        icon: Icons.lock_outline,
-                        color: const Color(0xFF64748B),
-                        onTap: () => _selectExpenseCategory('ロッカー代'),
-                      ),
-                    ),
-                    SizedBox(
-                      width: 150,
-                      child: ChoiceButton(
-                        label: '駐車場代',
-                        icon: Icons.local_parking,
-                        color: const Color(0xFF06B6D4),
-                        onTap: () => _selectExpenseCategory('駐車場代'),
-                      ),
-                    ),
-                    SizedBox(
-                      width: 150,
-                      child: ChoiceButton(
-                        label: '印刷代',
-                        icon: Icons.print,
-                        color: const Color(0xFFA855F7),
-                        onTap: () => _selectExpenseCategory('印刷代'),
-                      ),
-                    ),
-                    SizedBox(
-                      width: 150,
-                      child: ChoiceButton(
-                        label: 'その他',
-                        icon: Icons.more_horiz,
-                        color: const Color(0xFFF97316),
-                        onTap: () => _selectExpenseCategory('その他'),
+                        onTap: () => _selectScheduleChange('変更あり'),
                       ),
                     ),
                   ],
