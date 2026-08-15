@@ -3154,21 +3154,39 @@ class _AttendanceChatScreenState extends State<AttendanceChatScreen> {
 }
 
 
-class _WorkReportData {
-  String? storeName;
-  String? content;
-  bool? hasIssue;
-  String? issueDetail;
-  String? severity; // 軽微 / 要対応 / 緊急
+/// 所属ごとの役職選択肢。「顧客」はキーを持たない(役職質問自体をスキップする)。
+const Map<String, List<String>> _positionOptionsByAffiliation = {
+  '店舗社員': ['店長', '副店長', 'フロア長', '部門長', '主任', 'マネージャー'],
+  'ドコモ': ['CS営業', '代理店営業', 'リーダー', '一般スタッフ'],
+  'Softbank': ['部長', '課長', 'エリアマネージャー', 'SV', 'リーダー', '一般スタッフ'],
+  'KDDI': ['グループリーダー', '営業', 'CSA', 'リーダー', '一般スタッフ'],
+};
 
-  bool get hasStoreName => storeName != null && storeName!.trim().isNotEmpty;
+class _WorkReportData {
+  String? whenWhere; // いつ・どこで
+  String? affiliation; // 店舗社員 / ドコモ / KDDI / Softbank / 顧客
+  String? position; // 役職(affiliation=='顧客'の場合は使わない)
+  String? personName; // 名前
+  String? content; // 何があった/何を言われたか
+  String? background; // 背景・状況(不明可)
+  String? request; // どうしてほしいか
+
+  bool get hasWhenWhere => whenWhere != null && whenWhere!.trim().isNotEmpty;
+  bool get hasAffiliation => affiliation != null;
+  bool get needsPosition => affiliation != null && affiliation != '顧客';
+  bool get positionOk => !needsPosition || position != null;
+  bool get hasPersonName => personName != null && personName!.trim().isNotEmpty;
   bool get hasContent => content != null && content!.trim().isNotEmpty;
-  bool get issueKnown => hasIssue != null;
-  bool get issueDetailOk =>
-      hasIssue == false || (issueDetail != null && issueDetail!.trim().isNotEmpty);
-  bool get severityOk => hasIssue == false || severity != null;
+  bool get hasBackground => background != null && background!.trim().isNotEmpty;
+  bool get hasRequest => request != null && request!.trim().isNotEmpty;
   bool get isComplete =>
-      hasStoreName && hasContent && issueKnown && issueDetailOk && severityOk;
+      hasWhenWhere &&
+      hasAffiliation &&
+      positionOk &&
+      hasPersonName &&
+      hasContent &&
+      hasBackground &&
+      hasRequest;
 }
 
 class WorkReportChatScreen extends StatefulWidget {
@@ -3184,11 +3202,13 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
   final _WorkReportData _data = _WorkReportData();
 
   bool _isComplete = false;
-  bool _awaitingIssueChoice = false;
-  bool _awaitingSeverityChoice = false;
-  bool _lastAskedStoreName = false;
+  bool _awaitingAffiliationChoice = false;
+  bool _awaitingPositionChoice = false;
+  bool _lastAskedWhenWhere = false;
+  bool _lastAskedPersonName = false;
   bool _lastAskedContent = false;
-  bool _lastAskedIssueDetail = false;
+  bool _lastAskedBackground = false;
+  bool _lastAskedRequest = false;
   bool _isSaving = false;
   bool _saveFailed = false;
   HistoryEntry? _pendingEntry;
@@ -3196,8 +3216,8 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
   @override
   void initState() {
     super.initState();
-    _addJarvis('お疲れ様です。どちらの店舗の報告ですか？');
-    _lastAskedStoreName = true;
+    _addJarvis('お疲れ様です。いつ・どこでの出来事か教えてください。');
+    _lastAskedWhenWhere = true;
   }
 
   void _addJarvis(String text) {
@@ -3228,112 +3248,130 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
     _addUser(text);
     _controller.clear();
 
-    if (_lastAskedStoreName) {
-      _data.storeName = text;
+    if (_lastAskedWhenWhere) {
+      _data.whenWhere = text;
+    } else if (_lastAskedPersonName) {
+      _data.personName = text;
     } else if (_lastAskedContent) {
       _data.content = text;
-    } else if (_lastAskedIssueDetail) {
-      _data.issueDetail = text;
+    } else if (_lastAskedBackground) {
+      _data.background = text;
+    } else if (_lastAskedRequest) {
+      _data.request = text;
     }
     _advance();
   }
 
-  void _selectIssue(bool hasIssue, String label) {
-    if (!_awaitingIssueChoice) return;
+  void _selectAffiliation(String label) {
+    if (!_awaitingAffiliationChoice) return;
     _addUser(label);
-    _data.hasIssue = hasIssue;
-    setState(() => _awaitingIssueChoice = false);
+    _data.affiliation = label;
+    setState(() => _awaitingAffiliationChoice = false);
     _advance();
   }
 
-  void _selectSeverity(String label) {
-    if (!_awaitingSeverityChoice) return;
+  void _selectPosition(String label) {
+    if (!_awaitingPositionChoice) return;
     _addUser(label);
-    _data.severity = label;
-    setState(() => _awaitingSeverityChoice = false);
+    _data.position = label;
+    setState(() => _awaitingPositionChoice = false);
     _advance();
   }
 
   void _advance() {
-    _lastAskedStoreName = false;
+    _lastAskedWhenWhere = false;
+    _lastAskedPersonName = false;
     _lastAskedContent = false;
-    _lastAskedIssueDetail = false;
+    _lastAskedBackground = false;
+    _lastAskedRequest = false;
 
-    if (!_data.hasStoreName) {
-      _lastAskedStoreName = true;
-      _addJarvis('どちらの店舗の報告ですか？');
+    if (!_data.hasWhenWhere) {
+      _lastAskedWhenWhere = true;
+      _addJarvis('いつ・どこでの出来事か教えてください。');
+      return;
+    }
+    if (!_data.hasAffiliation) {
+      _addJarvis('相手の所属を教えてください。');
+      setState(() => _awaitingAffiliationChoice = true);
+      return;
+    }
+    if (_data.needsPosition && !_data.positionOk) {
+      _addJarvis('相手の役職を教えてください。');
+      setState(() => _awaitingPositionChoice = true);
+      return;
+    }
+    if (!_data.hasPersonName) {
+      _lastAskedPersonName = true;
+      _addJarvis('お名前を教えてください。');
       return;
     }
     if (!_data.hasContent) {
       _lastAskedContent = true;
-      _addJarvis('作業内容や気づいた点を教えてください。');
+      _addJarvis('何があった、または何を言われましたか？');
       return;
     }
     // 自己申告を鵜呑みにしない:内容が曖昧な場合は深掘りする(レベル2:AIが誘導)。
     // 1回目は素直に聞き直し、2回目もまだ曖昧なら聞き方を変えて具体例を示す。
+    // 2回聞き直しても曖昧なままなら、それ以上は拒否せず次の質問へ進む。
     if (_contentGuidanceAttempts < 2 && isVagueAnswer(_data.content ?? '')) {
       _contentGuidanceAttempts++;
       _data.content = null;
       _lastAskedContent = true;
       if (_contentGuidanceAttempts == 1) {
-        _addJarvis('恐れ入りますが、もう少し具体的に作業内容を教えていただけますか？(例:何を確認し、結果はどうだったか)');
+        _addJarvis('恐れ入りますが、もう少し具体的に教えていただけますか？(例:誰が何を言った、何が起きたか)');
       } else {
-        _addJarvis('重ねてすみません。例えば「在庫を確認し、A商品が3個不足していた」のように、確認した対象と結果をセットで教えてください。');
+        _addJarvis('重ねてすみません。例えば「○○について改善してほしいと言われた」のように、具体的な内容を教えてください。');
       }
       return;
     }
-    if (!_data.issueKnown) {
-      _addJarvis('特に問題はありましたか？');
-      setState(() => _awaitingIssueChoice = true);
+    if (!_data.hasBackground) {
+      _lastAskedBackground = true;
+      _addJarvis('背景・状況を教えてください。(不明であれば「不明」とご記入ください)');
       return;
     }
-    if (!_data.issueDetailOk) {
-      _lastAskedIssueDetail = true;
-      _addJarvis('問題の内容を詳しく教えてください。');
+    // 同様に背景・状況も曖昧な場合は深掘りするが、2回聞き直しても「不明」等のままなら
+    // 拒否せずそのまま次へ進む(「不明でも可」の要件はこの2回上限で担保する)。
+    if (_backgroundGuidanceAttempts < 2 && isVagueAnswer(_data.background ?? '')) {
+      _backgroundGuidanceAttempts++;
+      _data.background = null;
+      _lastAskedBackground = true;
+      if (_backgroundGuidanceAttempts == 1) {
+        _addJarvis('恐れ入りますが、わかる範囲で構いませんので、もう少し状況を教えていただけますか？');
+      } else {
+        _addJarvis('重ねてすみません。わからなければ「不明」で構いませんので、その旨を教えてください。');
+      }
       return;
     }
-    if (!_data.severityOk) {
-      _addJarvis('その問題の深刻度を教えてください。');
-      setState(() => _awaitingSeverityChoice = true);
+    if (!_data.hasRequest) {
+      _lastAskedRequest = true;
+      _addJarvis('どうしてほしいですか？');
       return;
     }
     _finalize();
   }
 
   int _contentGuidanceAttempts = 0;
+  int _backgroundGuidanceAttempts = 0;
 
   Future<void> _finalize() async {
-    // 内容自体が薄く、問題「なし」の自己申告だけの場合はレベル3(SV介入)へ
-    final contentStillVague = isVagueAnswer(_data.content ?? '');
-    final SuggestedAction action;
-    if (_data.hasIssue == true) {
-      switch (_data.severity) {
-        case '緊急':
-          action = SuggestedAction.escalate;
-          break;
-        case '要対応':
-          action = SuggestedAction.needsReschedule;
-          break;
-        default: // 軽微
-          action = SuggestedAction.approveOnly;
-      }
-    } else if (contentStillVague) {
-      action = SuggestedAction.needsReschedule;
-    } else {
-      action = SuggestedAction.approveOnly;
-    }
+    // 緊急性の高いものは電話等の別経路で連絡が来る前提のため、JARVIS経由の業務報告は
+    // 深刻度による分岐をせず全件SVの要対応として必ず表示されるようにする。
+    const action = SuggestedAction.needsReschedule;
     setState(() => _isComplete = true);
 
     final entry = HistoryEntry(
       id: PendingSubmissionRegistry.instance.claim('業務報告'),
       category: '業務報告',
-      title: '${_data.storeName}:${_data.content}',
+      title: '${_data.whenWhere} ${_data.personName}様:${_data.content}',
       action: action,
       fields: [
-        MapEntry('店舗', _data.storeName ?? '-'),
+        MapEntry('いつ・どこで', _data.whenWhere ?? '-'),
+        MapEntry('相手の所属', _data.affiliation ?? '-'),
+        if (_data.needsPosition) MapEntry('相手の役職', _data.position ?? '-'),
+        MapEntry('相手の名前', _data.personName ?? '-'),
         MapEntry('内容', _data.content ?? '-'),
-        MapEntry('問題', _data.hasIssue == true ? (_data.issueDetail ?? 'あり') : 'なし'),
-        if (_data.hasIssue == true) MapEntry('深刻度', _data.severity ?? '-'),
+        MapEntry('背景・状況', _data.background ?? '-'),
+        MapEntry('どうしてほしいか', _data.request ?? '-'),
       ],
       history: List.unmodifiable(_messages),
     );
@@ -3376,6 +3414,26 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
     super.dispose();
   }
 
+  Widget _wrapChoices(List<String> options, void Function(String) onSelect,
+      {IconData icon = Icons.person_outline, Color color = const Color(0xFF22C55E)}) {
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        for (final option in options)
+          SizedBox(
+            width: 150,
+            child: ChoiceButton(
+              label: option,
+              icon: icon,
+              color: color,
+              onTap: () => onSelect(option),
+            ),
+          ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -3398,63 +3456,24 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
                 itemBuilder: (context, index) => ChatBubble(message: _messages[index]),
               ),
             ),
-            if (_awaitingIssueChoice)
+            if (_awaitingAffiliationChoice)
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: ChoiceButton(
-                        label: 'あり',
-                        icon: Icons.warning_amber,
-                        color: const Color(0xFFF59E0B),
-                        onTap: () => _selectIssue(true, 'あり'),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: ChoiceButton(
-                        label: 'なし',
-                        icon: Icons.check_circle,
-                        color: const Color(0xFF22C55E),
-                        onTap: () => _selectIssue(false, 'なし'),
-                      ),
-                    ),
-                  ],
+                child: _wrapChoices(
+                  const ['店舗社員', 'ドコモ', 'KDDI', 'Softbank', '顧客'],
+                  _selectAffiliation,
+                  icon: Icons.groups_outlined,
+                  color: const Color(0xFF3B82F6),
                 ),
               )
-            else if (_awaitingSeverityChoice)
+            else if (_awaitingPositionChoice)
               Padding(
                 padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: ChoiceButton(
-                        label: '軽微',
-                        icon: Icons.info_outline,
-                        color: const Color(0xFF22C55E),
-                        onTap: () => _selectSeverity('軽微'),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: ChoiceButton(
-                        label: '要対応',
-                        icon: Icons.warning_amber,
-                        color: const Color(0xFFF59E0B),
-                        onTap: () => _selectSeverity('要対応'),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: ChoiceButton(
-                        label: '緊急',
-                        icon: Icons.priority_high,
-                        color: const Color(0xFFEF4444),
-                        onTap: () => _selectSeverity('緊急'),
-                      ),
-                    ),
-                  ],
+                child: _wrapChoices(
+                  _positionOptionsByAffiliation[_data.affiliation] ?? const [],
+                  _selectPosition,
+                  icon: Icons.badge_outlined,
+                  color: const Color(0xFFA855F7),
                 ),
               )
             else if (!_isComplete)
