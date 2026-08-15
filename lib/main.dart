@@ -3172,13 +3172,7 @@ class _WorkReportData {
 }
 
 class WorkReportChatScreen extends StatefulWidget {
-  /// 業務完了確認の「特記事項あり」から遷移した場合に、どの完了確認についての
-  /// 業務報告かを引き継ぐための任意パラメータ(ConsultationChatScreenの
-  /// sourceTaskId/sourceAnnouncementIdと同じ形)。
-  final String? sourceReportId;
-  final String? sourceReportTitle;
-
-  const WorkReportChatScreen({super.key, this.sourceReportId, this.sourceReportTitle});
+  const WorkReportChatScreen({super.key});
   @override
   State<WorkReportChatScreen> createState() => _WorkReportChatScreenState();
 }
@@ -3202,9 +3196,6 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
   @override
   void initState() {
     super.initState();
-    if (widget.sourceReportTitle != null) {
-      _addJarvis('「${widget.sourceReportTitle}」の特記事項についてですね。');
-    }
     _addJarvis('お疲れ様です。どちらの店舗の報告ですか？');
     _lastAskedStoreName = true;
   }
@@ -3345,7 +3336,6 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
         if (_data.hasIssue == true) MapEntry('深刻度', _data.severity ?? '-'),
       ],
       history: List.unmodifiable(_messages),
-      sourceReportId: widget.sourceReportId,
     );
 
     await _submitEntry(entry);
@@ -3367,16 +3357,6 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
         _pendingEntry = null;
       });
       _addJarvis('ありがとうございます。内容を確認し、SVに共有しました。');
-      // 業務完了確認の「特記事項あり」から遷移してきた場合は、ConsultationChatScreenと
-      // 同じく少し間を置いて元の完了確認より前の画面まで自動で戻る。通常のホーム画面からの
-      // 業務報告(紐づけなし)は、このままチャット画面に留まる既存の挙動を変えない。
-      if (widget.sourceReportId != null) {
-        await Future<void>.delayed(const Duration(milliseconds: 700));
-        if (!mounted) return;
-        Navigator.of(context)
-          ..pop()
-          ..pop();
-      }
     } catch (_) {
       BeforeUnloadGuard.disable();
       if (!mounted) return;
@@ -3842,6 +3822,7 @@ class _BusinessCompletionData {
   String? completionStatus; // 'はい' / '一部未完了'
   String? incompleteDetail; // 一部未完了の場合の自由記述(内容)
   bool? hasNote; // 特記事項の有無
+  String? noteContent; // 特記事項ありの場合の自由記述(内容)
   String? scheduleChange; // '変更なし' / '変更あり'
   String? scheduleChangeDetail; // 変更ありの場合の自由記述
 
@@ -3850,6 +3831,8 @@ class _BusinessCompletionData {
       completionStatus != '一部未完了' ||
       (incompleteDetail != null && incompleteDetail!.trim().isNotEmpty);
   bool get hasNoteKnown => hasNote != null;
+  bool get noteContentOk =>
+      hasNote != true || (noteContent != null && noteContent!.trim().isNotEmpty);
   bool get hasScheduleChangeKnown => scheduleChange != null;
   bool get scheduleChangeDetailOk =>
       scheduleChange != '変更あり' ||
@@ -3858,6 +3841,7 @@ class _BusinessCompletionData {
       hasCompletionStatus &&
       incompleteDetailOk &&
       hasNoteKnown &&
+      noteContentOk &&
       hasScheduleChangeKnown &&
       scheduleChangeDetailOk;
 }
@@ -3879,6 +3863,7 @@ class _BusinessCompletionChatScreenState extends State<BusinessCompletionChatScr
   bool _awaitingNoteChoice = false;
   bool _awaitingScheduleChoice = false;
   bool _lastAskedIncompleteDetail = false;
+  bool _lastAskedNoteContent = false;
   bool _lastAskedScheduleDetail = false;
   bool _isSaving = false;
   bool _saveFailed = false;
@@ -3921,6 +3906,8 @@ class _BusinessCompletionChatScreenState extends State<BusinessCompletionChatScr
 
     if (_lastAskedIncompleteDetail) {
       _data.incompleteDetail = text;
+    } else if (_lastAskedNoteContent) {
+      _data.noteContent = text;
     } else if (_lastAskedScheduleDetail) {
       _data.scheduleChangeDetail = text;
     }
@@ -3953,6 +3940,7 @@ class _BusinessCompletionChatScreenState extends State<BusinessCompletionChatScr
 
   void _advance() {
     _lastAskedIncompleteDetail = false;
+    _lastAskedNoteContent = false;
     _lastAskedScheduleDetail = false;
 
     if (!_data.hasCompletionStatus) {
@@ -3985,6 +3973,26 @@ class _BusinessCompletionChatScreenState extends State<BusinessCompletionChatScr
       setState(() => _awaitingNoteChoice = true);
       return;
     }
+    if (!_data.noteContentOk) {
+      _lastAskedNoteContent = true;
+      _addJarvis('特記事項の内容を教えてください。');
+      return;
+    }
+    // 自己申告を鵜呑みにしない:内容が曖昧な場合は深掘りする(レベル2:AIが誘導)。
+    // 1回目は素直に聞き直し、2回目もまだ曖昧なら聞き方を変える。
+    if (_data.hasNote == true &&
+        _noteContentGuidanceAttempts < 2 &&
+        isVagueAnswer(_data.noteContent ?? '')) {
+      _noteContentGuidanceAttempts++;
+      _data.noteContent = null;
+      _lastAskedNoteContent = true;
+      if (_noteContentGuidanceAttempts == 1) {
+        _addJarvis('恐れ入りますが、もう少し具体的に特記事項の内容を教えていただけますか？');
+      } else {
+        _addJarvis('重ねて恐れ入ります。何が、どのような状況かわかる範囲で構いませんので教えてください。');
+      }
+      return;
+    }
     if (!_data.hasScheduleChangeKnown) {
       _addJarvis('明日の予定に変更はありますか？');
       setState(() => _awaitingScheduleChoice = true);
@@ -3999,6 +4007,7 @@ class _BusinessCompletionChatScreenState extends State<BusinessCompletionChatScr
   }
 
   int _incompleteDetailGuidanceAttempts = 0;
+  int _noteContentGuidanceAttempts = 0;
 
   Future<void> _finalize() async {
     final SuggestedAction action;
@@ -4026,6 +4035,7 @@ class _BusinessCompletionChatScreenState extends State<BusinessCompletionChatScr
         if (_data.completionStatus == '一部未完了')
           MapEntry('未完了の内容', _data.incompleteDetail ?? '-'),
         MapEntry('特記事項', _data.hasNote == true ? 'あり' : 'なし'),
+        if (_data.hasNote == true) MapEntry('特記事項の内容', _data.noteContent ?? '-'),
         MapEntry('明日の予定変更', _data.scheduleChange ?? '-'),
         if (_data.scheduleChange == '変更あり')
           MapEntry('変更内容', _data.scheduleChangeDetail ?? '-'),
@@ -4052,22 +4062,6 @@ class _BusinessCompletionChatScreenState extends State<BusinessCompletionChatScr
         _pendingEntry = null;
       });
       _addJarvis('ありがとうございます。内容を確認し、SVに共有しました。');
-      // 特記事項ありの場合は、詳細を業務報告として記録してもらうためWorkReportChatScreenへ
-      // 遷移する(entry.idをsourceReportIdとして紐づける)。ConsultationChatScreenの
-      // 「対応する」導線と同じく、WorkReportChatScreen側が完了時にこの画面より前まで
-      // 自動で戻る(pop2回)ため、ここではpushするだけでよい。
-      if (_data.hasNote == true) {
-        await Future<void>.delayed(const Duration(milliseconds: 700));
-        if (!mounted) return;
-        Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => WorkReportChatScreen(
-              sourceReportId: entry.id,
-              sourceReportTitle: '業務完了確認',
-            ),
-          ),
-        );
-      }
     } catch (_) {
       BeforeUnloadGuard.disable();
       if (!mounted) return;
