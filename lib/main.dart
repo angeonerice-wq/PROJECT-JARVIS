@@ -3329,9 +3329,12 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
       _addJarvis('背景・状況を教えてください。(不明であれば「不明」とご記入ください)');
       return;
     }
-    // 同様に背景・状況も曖昧な場合は深掘りするが、2回聞き直しても「不明」等のままなら
-    // 拒否せずそのまま次へ進む(「不明でも可」の要件はこの2回上限で担保する)。
-    if (_backgroundGuidanceAttempts < 2 && isVagueAnswer(_data.background ?? '')) {
+    // 「背景・状況」は案内文で「不明」という回答を明示的に許容しているため、
+    // isVagueAnswer()の一般的な曖昧判定(4文字以下は曖昧扱い)から「不明」だけは
+    // 除外し、深掘りせずそのまま次へ進めるようにする。
+    if (_backgroundGuidanceAttempts < 2 &&
+        _data.background?.trim() != '不明' &&
+        isVagueAnswer(_data.background ?? '')) {
       _backgroundGuidanceAttempts++;
       _data.background = null;
       _lastAskedBackground = true;
