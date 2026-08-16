@@ -3498,14 +3498,12 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
 
 
 class _ConsultationData {
-  String? topic; // 店頭展示・POP / 商品知識・スペック / 店舗スタッフとの関係 / 競合情報 / その他
+  String? topic; // 業務のやり方 / 労務・勤怠関連 / その他
   String? content;
-  String? urgency;
 
   bool get hasTopic => topic != null;
   bool get hasContent => content != null && content!.trim().isNotEmpty;
-  bool get hasUrgency => urgency != null;
-  bool get isComplete => hasTopic && hasContent && hasUrgency;
+  bool get isComplete => hasTopic && hasContent;
 }
 
 class ConsultationChatScreen extends StatefulWidget {
@@ -3544,7 +3542,6 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
   final _ConsultationData _data = _ConsultationData();
 
   bool _isComplete = false;
-  bool _awaitingUrgencyChoice = false;
   bool _awaitingTopicChoice = false;
   bool _lastAskedContent = false;
   bool _isSaving = false;
@@ -3598,14 +3595,6 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
     _advance();
   }
 
-  void _selectUrgency(String label) {
-    if (!_awaitingUrgencyChoice) return;
-    _addUser(label);
-    _data.urgency = label;
-    setState(() => _awaitingUrgencyChoice = false);
-    _advance();
-  }
-
   void _selectTopic(String label) {
     if (!_awaitingTopicChoice) return;
     _addUser(label);
@@ -3639,28 +3628,15 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
       }
       return;
     }
-    if (!_data.hasUrgency) {
-      _addJarvis('回答の緊急度を教えてください。');
-      setState(() => _awaitingUrgencyChoice = true);
-      return;
-    }
     _finalize();
   }
 
   int _contentGuidanceAttempts = 0;
 
   Future<void> _finalize() async {
-    final SuggestedAction action;
-    switch (_data.urgency) {
-      case '今すぐ回答がほしい':
-        action = SuggestedAction.escalate;
-        break;
-      case '今日中でOK':
-        action = SuggestedAction.needsReschedule;
-        break;
-      default:
-        action = SuggestedAction.approveOnly;
-    }
+    // 緊急な場合はJARVIS経由ではなく電話等の別経路で連絡が来る前提のため、
+    // 業務報告カテゴリと同じく緊急度による分岐をせず全件SVの要対応として必ず表示する。
+    const action = SuggestedAction.needsReschedule;
     setState(() => _isComplete = true);
 
     final entry = HistoryEntry(
@@ -3671,7 +3647,6 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
       fields: [
         MapEntry('ジャンル', _data.topic ?? '-'),
         MapEntry('相談内容', _data.content ?? '-'),
-        MapEntry('緊急度', _data.urgency ?? '-'),
       ],
       history: List.unmodifiable(_messages),
       sourceTaskId: widget.sourceTaskId,
@@ -3758,31 +3733,17 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
                 child: Column(
                   children: [
                     ChoiceButton(
-                      label: '店頭展示・POP',
-                      icon: Icons.storefront,
-                      color: const Color(0xFF22C55E),
-                      onTap: () => _selectTopic('店頭展示・POP'),
-                    ),
-                    const SizedBox(height: 8),
-                    ChoiceButton(
-                      label: '商品知識・スペック',
-                      icon: Icons.smartphone,
+                      label: '業務のやり方',
+                      icon: Icons.help_outline,
                       color: const Color(0xFF3B82F6),
-                      onTap: () => _selectTopic('商品知識・スペック'),
+                      onTap: () => _selectTopic('業務のやり方'),
                     ),
                     const SizedBox(height: 8),
                     ChoiceButton(
-                      label: '店舗スタッフとの関係',
-                      icon: Icons.people_outline,
+                      label: '労務・勤怠関連',
+                      icon: Icons.badge_outlined,
                       color: const Color(0xFFF59E0B),
-                      onTap: () => _selectTopic('店舗スタッフとの関係'),
-                    ),
-                    const SizedBox(height: 8),
-                    ChoiceButton(
-                      label: '競合情報',
-                      icon: Icons.compare_arrows,
-                      color: const Color(0xFF06B6D4),
-                      onTap: () => _selectTopic('競合情報'),
+                      onTap: () => _selectTopic('労務・勤怠関連'),
                     ),
                     const SizedBox(height: 8),
                     ChoiceButton(
@@ -3790,34 +3751,6 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
                       icon: Icons.more_horiz,
                       color: const Color(0xFF64748B),
                       onTap: () => _selectTopic('その他'),
-                    ),
-                  ],
-                ),
-              )
-            else if (_awaitingUrgencyChoice)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
-                child: Column(
-                  children: [
-                    ChoiceButton(
-                      label: '今すぐ回答がほしい',
-                      icon: Icons.priority_high,
-                      color: const Color(0xFFEF4444),
-                      onTap: () => _selectUrgency('今すぐ回答がほしい'),
-                    ),
-                    const SizedBox(height: 8),
-                    ChoiceButton(
-                      label: '今日中でOK',
-                      icon: Icons.today,
-                      color: const Color(0xFFF59E0B),
-                      onTap: () => _selectUrgency('今日中でOK'),
-                    ),
-                    const SizedBox(height: 8),
-                    ChoiceButton(
-                      label: '急ぎではない',
-                      icon: Icons.check_circle,
-                      color: const Color(0xFF22C55E),
-                      onTap: () => _selectUrgency('急ぎではない'),
                     ),
                   ],
                 ),
