@@ -627,12 +627,14 @@ class _HomeHeaderBarState extends State<_HomeHeaderBar> {
     super.initState();
     UserSession.instance.addListener(_onChanged);
     SvReportStore.instance.addListener(_onChanged);
+    SentAnnouncementStore.instance.addListener(_onChanged);
   }
 
   @override
   void dispose() {
     UserSession.instance.removeListener(_onChanged);
     SvReportStore.instance.removeListener(_onChanged);
+    SentAnnouncementStore.instance.removeListener(_onChanged);
     super.dispose();
   }
 
@@ -644,10 +646,12 @@ class _HomeHeaderBarState extends State<_HomeHeaderBar> {
   Widget build(BuildContext context) {
     final isSv = UserSession.instance.role == UserRole.sv;
     // 通知ベルのバッジ件数。統計カードの未確認/要対応(本日分のみ)とは異なり、
-    // タップ先のサマリータブと一致させるため全期間で算出する。
+    // タップ先のサマリータブと一致させるため全期間で算出する。未確認側には
+    // 「本日の状況」カードと同様、announcements側の未確認件数も合算する。
     final bellBadgeCount = isSv
         ? filterReportsByTab(SvReportStore.instance.entries, SummaryReportTab.unreviewed)
                 .length +
+            SentAnnouncementStore.instance.entries.where((a) => !a.isConfirmed).length +
             filterReportsByTab(SvReportStore.instance.entries, SummaryReportTab.needsAction)
                 .length
         : 0;
@@ -1124,12 +1128,14 @@ class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
     super.initState();
     SvReportStore.instance.addListener(_onChanged);
     StaffRosterStore.instance.addListener(_onChanged);
+    SentAnnouncementStore.instance.addListener(_onChanged);
   }
 
   @override
   void dispose() {
     SvReportStore.instance.removeListener(_onChanged);
     StaffRosterStore.instance.removeListener(_onChanged);
+    SentAnnouncementStore.instance.removeListener(_onChanged);
     super.dispose();
   }
 
@@ -1149,7 +1155,14 @@ class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
     final activeCount = (totalStaffCount - absentCount).clamp(0, totalStaffCount);
     final completedTaskCount =
         todayEntries.where((e) => e.category == 'タスク完了').length;
-    final unreviewedCount = todayEntries.where((e) => e.reviewedAt == null).length;
+    // 未確認件数には、reports側の未レビュー件数(本日分)に加えて、
+    // announcements側でまだ「確認しました」を押されていない件数(全期間、
+    // 確認されるまでSVが気にすべき情報のため本日に限定しない)を合算する。
+    // 「要対応」側には含めない(未確認と要対応は意味合いが異なるため)。
+    final unconfirmedAnnouncementCount =
+        SentAnnouncementStore.instance.entries.where((a) => !a.isConfirmed).length;
+    final unreviewedCount = todayEntries.where((e) => e.reviewedAt == null).length +
+        unconfirmedAnnouncementCount;
     final needsActionCount = todayEntries
         .where((e) =>
             e.reviewedAction == SuggestedAction.needsReschedule ||
