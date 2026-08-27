@@ -963,7 +963,7 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
                     onTap: () {
                       Navigator.of(context).push(
                         MaterialPageRoute(
-                          builder: (_) => const AnnouncementChatScreen(),
+                          builder: (_) => const AnnouncementsScreen(),
                         ),
                       );
                     },
@@ -3512,11 +3512,6 @@ class ConsultationChatScreen extends StatefulWidget {
   final String? sourceTaskId;
   final String? sourceTaskTitle;
 
-  /// お知らせ詳細画面の「問い合わせ」から遷移した場合に、どのお知らせについての
-  /// 相談かを引き継ぐための任意パラメータ(sourceTaskId/sourceTaskTitleと同じ形)。
-  final String? sourceAnnouncementId;
-  final String? sourceAnnouncementTitle;
-
   /// SV確認画面の「対応する」から遷移した場合に、どの報告(再調整依頼)についての
   /// 相談かを引き継ぐための任意パラメータ(sourceTaskId/sourceTaskTitleと同じ形)。
   final String? sourceReportId;
@@ -3526,8 +3521,6 @@ class ConsultationChatScreen extends StatefulWidget {
     super.key,
     this.sourceTaskId,
     this.sourceTaskTitle,
-    this.sourceAnnouncementId,
-    this.sourceAnnouncementTitle,
     this.sourceReportId,
     this.sourceReportTitle,
   });
@@ -3553,8 +3546,6 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
     super.initState();
     if (widget.sourceTaskTitle != null) {
       _addJarvis('「${widget.sourceTaskTitle}」についてのお問い合わせですね。');
-    } else if (widget.sourceAnnouncementTitle != null) {
-      _addJarvis('「${widget.sourceAnnouncementTitle}」についてのお問い合わせですね。');
     } else if (widget.sourceReportTitle != null) {
       _addJarvis('「${widget.sourceReportTitle}」の再調整についてのご相談ですね。');
     }
@@ -3650,7 +3641,6 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
       ],
       history: List.unmodifiable(_messages),
       sourceTaskId: widget.sourceTaskId,
-      announcementId: widget.sourceAnnouncementId,
       sourceReportId: widget.sourceReportId,
     );
 
@@ -3673,13 +3663,11 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
         _pendingEntry = null;
       });
       _addJarvis('ありがとうございます。内容を確認し、SVに共有しました。');
-      // タスク詳細画面/お知らせ詳細画面の「問い合わせ」から遷移してきた場合は、
+      // タスク詳細画面の「問い合わせ」/SVの「対応する」から遷移してきた場合は、
       // TaskQuickCompleteScreen(完了報告)と同じく、少し間を置いて一覧画面まで自動で戻る。
       // 通常のホーム画面からの業務相談(どちらの紐づけもなし)は、このままチャット画面に
       // 留まる既存の挙動を変えない。
-      if (widget.sourceTaskId != null ||
-          widget.sourceAnnouncementId != null ||
-          widget.sourceReportId != null) {
+      if (widget.sourceTaskId != null || widget.sourceReportId != null) {
         await Future<void>.delayed(const Duration(milliseconds: 700));
         if (!mounted) return;
         Navigator.of(context)
@@ -4389,214 +4377,6 @@ class _OtherChatScreenState extends State<OtherChatScreen> {
 
 
 
-class AnnouncementChatScreen extends StatefulWidget {
-  const AnnouncementChatScreen({super.key});
-  @override
-  State<AnnouncementChatScreen> createState() => _AnnouncementChatScreenState();
-}
-
-class _AnnouncementChatScreenState extends State<AnnouncementChatScreen> {
-  final List<ChatMessage> _messages = [];
-  final TextEditingController _controller = TextEditingController();
-  final ScrollController _scrollController = ScrollController();
-
-  bool _isComplete = false;
-  bool _awaitingConfirmChoice = false;
-  bool _awaitingQuestionInput = false;
-  String? _questionText;
-  bool _isSaving = false;
-  bool _saveFailed = false;
-  HistoryEntry? _pendingEntry;
-  bool _pendingHadQuestion = false;
-
-  static const String _noticeText =
-      '【本日の重要なお知らせ】\n'
-      '来週より、勤怠報告の締め切り時刻が18:00に変更となります。\n'
-      'ご確認をお願いします。';
-
-  @override
-  void initState() {
-    super.initState();
-    _addJarvis('お疲れ様です。$_noticeText');
-    setState(() => _awaitingConfirmChoice = true);
-  }
-
-  void _addJarvis(String text) {
-    setState(() => _messages.add(ChatMessage(Sender.jarvis, text)));
-    _scrollToBottom();
-  }
-
-  void _addUser(String text) {
-    setState(() => _messages.add(ChatMessage(Sender.user, text)));
-    _scrollToBottom();
-  }
-
-  void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent + 80,
-          duration: const Duration(milliseconds: 250),
-          curve: Curves.easeOut,
-        );
-      }
-    });
-  }
-
-  void _confirmRead() {
-    if (!_awaitingConfirmChoice) return;
-    _addUser('確認しました');
-    setState(() => _awaitingConfirmChoice = false);
-    _finalize(hadQuestion: false);
-  }
-
-  void _hasQuestion() {
-    if (!_awaitingConfirmChoice) return;
-    _addUser('質問がある');
-    setState(() {
-      _awaitingConfirmChoice = false;
-      _awaitingQuestionInput = true;
-    });
-    _addJarvis('ご質問の内容を教えてください。');
-  }
-
-  void _handleSend() {
-    final text = _controller.text.trim();
-    if (text.isEmpty || _isComplete) return;
-    _addUser(text);
-    _controller.clear();
-    if (_awaitingQuestionInput) {
-      _questionText = text;
-      setState(() => _awaitingQuestionInput = false);
-      _finalize(hadQuestion: true);
-    }
-  }
-
-  Future<void> _finalize({required bool hadQuestion}) async {
-    final action =
-        hadQuestion ? SuggestedAction.needsReschedule : SuggestedAction.approveOnly;
-    setState(() => _isComplete = true);
-
-    final entry = HistoryEntry(
-      id: PendingSubmissionRegistry.instance.claim('周知確認'),
-      category: '周知確認',
-      title: hadQuestion ? (_questionText ?? '質問あり') : '確認済み',
-      action: action,
-      fields: [
-        const MapEntry('お知らせ', '勤怠報告の締め切り時刻が18:00に変更'),
-        MapEntry('確認結果', hadQuestion ? '質問あり:${_questionText ?? ''}' : '確認しました'),
-      ],
-      history: List.unmodifiable(_messages),
-    );
-
-    await _submitEntry(entry, hadQuestion: hadQuestion);
-  }
-
-  Future<void> _submitEntry(HistoryEntry entry, {required bool hadQuestion}) async {
-    setState(() {
-      _isSaving = true;
-      _saveFailed = false;
-      _pendingHadQuestion = hadQuestion;
-    });
-    BeforeUnloadGuard.enable();
-    try {
-      await HistoryStore.instance.add(entry);
-      PendingSubmissionRegistry.instance.release(entry.category);
-      BeforeUnloadGuard.disable();
-      if (!mounted) return;
-      setState(() {
-        _isSaving = false;
-        _pendingEntry = null;
-      });
-      _addJarvis(hadQuestion
-          ? 'ありがとうございます。ご質問をSVに共有しました。'
-          : 'ご確認ありがとうございます。SVに確認済みとして共有しました。');
-    } catch (_) {
-      BeforeUnloadGuard.disable();
-      if (!mounted) return;
-      setState(() {
-        _isSaving = false;
-        _saveFailed = true;
-        _pendingEntry = entry;
-      });
-      _addJarvis('申し訳ありません、保存に失敗しました。通信状況をご確認のうえ、もう一度お試しください。');
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    _scrollController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF0A0E1A),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF0A0E1A),
-        elevation: 0,
-        title: const Text('周知確認', style: TextStyle(color: Colors.white, fontSize: 17)),
-        iconTheme: const IconThemeData(color: Colors.white70),
-      ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            const _ChatGuidanceBanner(text: 'ここは重要なお知らせの確認のチャット欄です。'),
-            Expanded(
-              child: ListView.builder(
-                controller: _scrollController,
-                padding: const EdgeInsets.all(16),
-                itemCount: _messages.length,
-                itemBuilder: (context, index) => ChatBubble(message: _messages[index]),
-              ),
-            ),
-            if (_awaitingConfirmChoice)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: ChoiceButton(
-                        label: '確認しました',
-                        icon: Icons.check_circle,
-                        color: const Color(0xFF22C55E),
-                        onTap: _confirmRead,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: ChoiceButton(
-                        label: '質問がある',
-                        icon: Icons.help_outline,
-                        color: const Color(0xFFA855F7),
-                        onTap: _hasQuestion,
-                      ),
-                    ),
-                  ],
-                ),
-              )
-            else if (_awaitingQuestionInput)
-              ChatInputBar(controller: _controller, onSend: _handleSend)
-            else if (_isSaving || _saveFailed)
-              _SubmitStatusBar(
-                isSaving: _isSaving,
-                onRetry: () {
-                  if (_pendingEntry != null) {
-                    _submitEntry(_pendingEntry!, hadQuestion: _pendingHadQuestion);
-                  }
-                },
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-
-
 class HistoryTabBody extends StatefulWidget {
   const HistoryTabBody({super.key});
 
@@ -4612,6 +4392,7 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
     HistoryStore.instance.addListener(_onStoreChanged);
     SvHistoryStore.instance.addListener(_onStoreChanged);
     SvReportStore.instance.addListener(_onStoreChanged);
+    SentAnnouncementStore.instance.addListener(_onStoreChanged);
   }
 
   @override
@@ -4620,6 +4401,7 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
     HistoryStore.instance.removeListener(_onStoreChanged);
     SvHistoryStore.instance.removeListener(_onStoreChanged);
     SvReportStore.instance.removeListener(_onStoreChanged);
+    SentAnnouncementStore.instance.removeListener(_onStoreChanged);
     super.dispose();
   }
 
@@ -4638,6 +4420,12 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
     final reportCategoryById = {
       for (final e in SvReportStore.instance.entries)
         if (e.id != null) e.id!: e.category,
+    };
+    // announcementIdが紐づく報告(周知確認の質問)で、元のお知らせのタイトルを
+    // 一覧・詳細画面に注記するためのルックアップ。SentAnnouncementStore(自分が
+    // 送信したお知らせ全件)から構築する(新規Firestore読み取りは不要)。
+    final announcementTitleById = {
+      for (final a in SentAnnouncementStore.instance.entries) a.id: a.title,
     };
 
     return Column(
@@ -4704,6 +4492,9 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
                             sourceReportCategory: e.sourceReportId != null
                                 ? reportCategoryById[e.sourceReportId]
                                 : null,
+                            sourceAnnouncementTitle: e.announcementId != null
+                                ? announcementTitleById[e.announcementId]
+                                : null,
                           ),
                         ),
                       ),
@@ -4759,6 +4550,16 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
                                     '元の報告:「${reportCategoryById[e.sourceReportId]}」への回答',
                                     style: const TextStyle(
                                         color: Color(0xFFA855F7),
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.bold)),
+                              ],
+                              if (e.announcementId != null &&
+                                  announcementTitleById[e.announcementId] != null) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                    '元のお知らせ:「${announcementTitleById[e.announcementId]}」への質問',
+                                    style: const TextStyle(
+                                        color: Color(0xFF06B6D4),
                                         fontSize: 11,
                                         fontWeight: FontWeight.bold)),
                               ],
@@ -4922,6 +4723,7 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
     SvReportStore.instance.addListener(_onChanged);
     HistoryStore.instance.addListener(_onChanged);
     AssignedTaskStore.instance.addListener(_onChanged);
+    SentAnnouncementStore.instance.addListener(_onChanged);
   }
 
   @override
@@ -4930,6 +4732,7 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
     SvReportStore.instance.removeListener(_onChanged);
     HistoryStore.instance.removeListener(_onChanged);
     AssignedTaskStore.instance.removeListener(_onChanged);
+    SentAnnouncementStore.instance.removeListener(_onChanged);
     super.dispose();
   }
 
@@ -5017,6 +4820,11 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
     final reportCategoryById = {
       for (final e in svEntries)
         if (e.id != null) e.id!: e.category,
+    };
+    // announcementIdが紐づく報告(周知確認の質問)で、元のお知らせのタイトルを
+    // 一覧・詳細画面に注記するためのルックアップ。新規クエリは不要。
+    final announcementTitleById = {
+      for (final a in SentAnnouncementStore.instance.entries) a.id: a.title,
     };
     final breakdown = isSv ? _realBreakdown(svEntries) : _dummyBreakdown;
     final maxCount = breakdown.isEmpty
@@ -5238,6 +5046,9 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
                                 sourceReportCategory: e.sourceReportId != null
                                     ? reportCategoryById[e.sourceReportId]
                                     : null,
+                                sourceAnnouncementTitle: e.announcementId != null
+                                    ? announcementTitleById[e.announcementId]
+                                    : null,
                               ),
                             ),
                           ),
@@ -5288,6 +5099,16 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
                                         '元の報告:「${reportCategoryById[e.sourceReportId]}」への回答',
                                         style: const TextStyle(
                                             color: Color(0xFFA855F7),
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.bold)),
+                                  ],
+                                  if (e.announcementId != null &&
+                                      announcementTitleById[e.announcementId] != null) ...[
+                                    const SizedBox(height: 4),
+                                    Text(
+                                        '元のお知らせ:「${announcementTitleById[e.announcementId]}」への質問',
+                                        style: const TextStyle(
+                                            color: Color(0xFF06B6D4),
                                             fontSize: 11,
                                             fontWeight: FontWeight.bold)),
                                   ],
@@ -6834,56 +6655,159 @@ class AnnouncementDetailScreen extends StatefulWidget {
 }
 
 class _AnnouncementDetailScreenState extends State<AnnouncementDetailScreen> {
-  bool _isConfirming = false;
-  bool _confirmFailed = false;
-  DateTime? _confirmedAtOverride;
+  final List<ChatMessage> _messages = [];
+  final TextEditingController _controller = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
 
-  Future<void> _confirm() async {
-    if (_isConfirming) return; // 二重送信防止
-    setState(() {
-      _isConfirming = true;
-      _confirmFailed = false;
+  bool _isComplete = false;
+  bool _awaitingConfirmButton = false;
+  bool _awaitingQuestionChoice = false;
+  bool _awaitingQuestionInput = false;
+  String? _questionText;
+  bool _isSaving = false;
+  bool _saveFailed = false;
+  bool _pendingHadQuestion = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final announcement = widget.announcement;
+    _addJarvis(
+        'お疲れ様です。「${announcement.title}」というお知らせが届いています。\n\n${announcement.body.isEmpty ? '(本文の記載はありません)' : announcement.body}');
+    _addJarvis(
+        '送信者: ${announcement.sentByName ?? shortStaffId(announcement.sentBy)} / 受け取り: ${announcement.time}');
+    if (announcement.isConfirmed) {
+      _addJarvis('このお知らせは確認済みです。');
+      setState(() => _isComplete = true);
+    } else {
+      setState(() => _awaitingConfirmButton = true);
+    }
+  }
+
+  void _addJarvis(String text) {
+    setState(() => _messages.add(ChatMessage(Sender.jarvis, text)));
+    _scrollToBottom();
+  }
+
+  void _addUser(String text) {
+    setState(() => _messages.add(ChatMessage(Sender.user, text)));
+    _scrollToBottom();
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent + 80,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOut,
+        );
+      }
     });
+  }
+
+  void _pressConfirm() {
+    if (!_awaitingConfirmButton) return;
+    _addUser('確認しました');
+    setState(() => _awaitingConfirmButton = false);
+    _addJarvis('質問はありますか？');
+    setState(() => _awaitingQuestionChoice = true);
+  }
+
+  void _selectQuestion(bool hasQuestion, String label) {
+    if (!_awaitingQuestionChoice) return;
+    _addUser(label);
+    setState(() => _awaitingQuestionChoice = false);
+    if (hasQuestion) {
+      setState(() => _awaitingQuestionInput = true);
+      _addJarvis('ご質問の内容を教えてください。');
+    } else {
+      _finalizeConfirm(hadQuestion: false);
+    }
+  }
+
+  void _handleSend() {
+    final text = _controller.text.trim();
+    if (text.isEmpty || _isComplete) return;
+    _addUser(text);
+    _controller.clear();
+    if (_awaitingQuestionInput) {
+      _questionText = text;
+      setState(() => _awaitingQuestionInput = false);
+      _finalizeConfirm(hadQuestion: true);
+    }
+  }
+
+  /// announcements/{id}のconfirmedAtを更新し、質問ありの場合はあわせて
+  /// 周知確認カテゴリのHistoryEntry(announcementId付き)を保存する。
+  /// PendingSubmissionRegistry.claim()が同じカテゴリでは同じIDを使い回すため、
+  /// 失敗後の再試行(_pendingHadQuestionを使って同じ内容で呼び直す)でも
+  /// 重複ドキュメントは作られない。
+  Future<void> _finalizeConfirm({required bool hadQuestion}) async {
+    setState(() {
+      _isSaving = true;
+      _saveFailed = false;
+      _pendingHadQuestion = hadQuestion;
+    });
+    BeforeUnloadGuard.enable();
     try {
       await FirebaseFirestore.instance
           .collection('announcements')
           .doc(widget.announcement.id)
           .update({'confirmedAt': FieldValue.serverTimestamp()})
           .timeout(const Duration(seconds: 10));
+
+      if (hadQuestion) {
+        final entry = HistoryEntry(
+          id: PendingSubmissionRegistry.instance.claim('周知確認'),
+          category: '周知確認',
+          title: _questionText ?? '質問あり',
+          action: SuggestedAction.needsReschedule,
+          fields: [
+            MapEntry('お知らせ', widget.announcement.title),
+            MapEntry('質問内容', _questionText ?? '-'),
+          ],
+          history: List.unmodifiable(_messages),
+          announcementId: widget.announcement.id,
+        );
+        await HistoryStore.instance.add(entry);
+        PendingSubmissionRegistry.instance.release(entry.category);
+      }
+
+      BeforeUnloadGuard.disable();
       if (!mounted) return;
-      // 成功時はNavigatorで一覧に戻るまで_isConfirmingをtrueのままにしておく
-      // (TaskQuickCompleteScreen._submitと同じ)。ここでfalseに戻すと、自動遷移までの
-      // 間だけボタンが再度タップ可能になり、連打で二重送信されてしまう。
-      setState(() => _confirmedAtOverride = DateTime.now());
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('確認しました。'),
-          backgroundColor: Color(0xFF141826),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      setState(() {
+        _isSaving = false;
+        _isComplete = true;
+      });
+      _addJarvis(hadQuestion
+          ? 'ありがとうございます。ご質問をSVに共有しました。'
+          : 'ご確認ありがとうございます。SVに確認済みとして共有しました。');
       // スナックバーが見える程度の間を置いてから、一覧画面まで自動で戻る
       // (TaskQuickCompleteScreen._submitの成功時と同じパターン)。
       await Future<void>.delayed(const Duration(milliseconds: 700));
       if (!mounted) return;
       Navigator.of(context).pop();
     } catch (_) {
+      BeforeUnloadGuard.disable();
       if (!mounted) return;
       setState(() {
-        _isConfirming = false;
-        _confirmFailed = true;
+        _isSaving = false;
+        _saveFailed = true;
       });
+      _addJarvis('申し訳ありません、保存に失敗しました。通信状況をご確認のうえ、もう一度お試しください。');
     }
   }
 
   @override
-  Widget build(BuildContext context) {
-    final announcement = widget.announcement;
-    // confirmedAtはFirestore側の更新がReceivedAnnouncementStore経由で反映されるが、
-    // この画面はwidget.announcementのスナップショットを保持したままなので、確認直後は
-    // _confirmedAtOverrideで見た目を即時反映する(_SvSummaryScreenの_decisionと同じ考え方)。
-    final isConfirmed = _confirmedAtOverride != null || announcement.isConfirmed;
+  void dispose() {
+    _controller.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
 
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF0A0E1A),
       appBar: AppBar(
@@ -6893,139 +6817,60 @@ class _AnnouncementDetailScreenState extends State<AnnouncementDetailScreen> {
         iconTheme: const IconThemeData(color: Colors.white70),
       ),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
+        child: Column(
+          children: [
+            const _ChatGuidanceBanner(text: 'ここはお知らせの確認用のチャット欄です。'),
+            Expanded(
+              child: ListView.builder(
+                controller: _scrollController,
                 padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF141826),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.white10),
+                itemCount: _messages.length,
+                itemBuilder: (context, index) => ChatBubble(message: _messages[index]),
+              ),
+            ),
+            if (_awaitingConfirmButton)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
+                child: ChoiceButton(
+                  label: '確認しました',
+                  icon: Icons.check_circle,
+                  color: const Color(0xFF22C55E),
+                  onTap: _pressConfirm,
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+              )
+            else if (_awaitingQuestionChoice)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
+                child: Row(
                   children: [
-                    Row(
-                      children: [
-                        const CircleAvatar(
-                          radius: 20,
-                          backgroundColor: Color(0x3306B6D4),
-                          child: Icon(Icons.campaign_outlined, color: Colors.white, size: 18),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(announcement.title,
-                              style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold)),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                        '送信者: ${announcement.sentByName ?? shortStaffId(announcement.sentBy)}',
-                        style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
-                    const SizedBox(height: 4),
-                    Text('受け取り: ${announcement.time}',
-                        style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-              const Text('内容',
-                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF141826),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: Colors.white10),
-                ),
-                child: Text(
-                  announcement.body.isEmpty ? '(本文の記載はありません)' : announcement.body,
-                  style: const TextStyle(color: Colors.white70, fontSize: 13.5, height: 1.5),
-                ),
-              ),
-              const SizedBox(height: 24),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => ConsultationChatScreen(
-                              sourceAnnouncementId: announcement.id,
-                              sourceAnnouncementTitle: announcement.title,
-                            ),
-                          ),
-                        );
-                      },
-                      icon: const Icon(Icons.chat_bubble_outline, size: 18),
-                      label: const Text('問い合わせ'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.white,
-                        side: const BorderSide(color: Colors.white24),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
+                    Expanded(
+                      child: ChoiceButton(
+                        label: 'あり',
+                        icon: Icons.help_outline,
+                        color: const Color(0xFFA855F7),
+                        onTap: () => _selectQuestion(true, 'あり'),
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: isConfirmed
-                        ? OutlinedButton.icon(
-                            onPressed: null,
-                            icon: const Icon(Icons.check_circle, size: 18),
-                            label: const Text('確認済み'),
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: const Color(0xFF22C55E),
-                              disabledForegroundColor: const Color(0xFF22C55E),
-                              side: const BorderSide(color: Color(0xFF22C55E)),
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                            ),
-                          )
-                        : ElevatedButton.icon(
-                            onPressed: _isConfirming ? null : _confirm,
-                            icon: _isConfirming
-                                ? const SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2, color: Colors.black),
-                                  )
-                                : const Icon(Icons.check_circle_outline, size: 18),
-                            label: const Text('確認しました'),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.cyanAccent,
-                              foregroundColor: Colors.black,
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                            ),
-                          ),
-                  ),
-                ],
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: ChoiceButton(
+                        label: 'なし',
+                        icon: Icons.check_circle,
+                        color: const Color(0xFF22C55E),
+                        onTap: () => _selectQuestion(false, 'なし'),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else if (_awaitingQuestionInput)
+              ChatInputBar(controller: _controller, onSend: _handleSend)
+            else if (_isSaving || _saveFailed)
+              _SubmitStatusBar(
+                isSaving: _isSaving,
+                onRetry: () => _finalizeConfirm(hadQuestion: _pendingHadQuestion),
               ),
-              if (_confirmFailed) ...[
-                const SizedBox(height: 12),
-                const Text('確認の送信に失敗しました。もう一度お試しください。',
-                    style: TextStyle(color: Color(0xFFEF4444), fontSize: 12.5)),
-              ],
-            ],
-          ),
+          ],
         ),
       ),
     );
@@ -7930,12 +7775,14 @@ class _StaffDetailScreenState extends State<StaffDetailScreen> {
     super.initState();
     SvReportStore.instance.addListener(_onChanged);
     SentTaskStore.instance.addListener(_onChanged);
+    SentAnnouncementStore.instance.addListener(_onChanged);
   }
 
   @override
   void dispose() {
     SvReportStore.instance.removeListener(_onChanged);
     SentTaskStore.instance.removeListener(_onChanged);
+    SentAnnouncementStore.instance.removeListener(_onChanged);
     super.dispose();
   }
 
@@ -7957,7 +7804,7 @@ class _StaffDetailScreenState extends State<StaffDetailScreen> {
   }
 
   Widget _entryList(List<HistoryEntry> entries, String emptyLabel,
-      Map<String, String> reportCategoryById) {
+      Map<String, String> reportCategoryById, Map<String, String> announcementTitleById) {
     if (entries.isEmpty) {
       return Text(emptyLabel, style: TextStyle(color: Colors.grey[500], fontSize: 12.5));
     }
@@ -7971,7 +7818,10 @@ class _StaffDetailScreenState extends State<StaffDetailScreen> {
               padding: EdgeInsets.symmetric(vertical: 8),
               child: Divider(height: 1, color: Colors.white10),
             ),
-          _StaffHistoryRow(entry: rows[i], reportCategoryById: reportCategoryById),
+          _StaffHistoryRow(
+              entry: rows[i],
+              reportCategoryById: reportCategoryById,
+              announcementTitleById: announcementTitleById),
         ],
       ],
     );
@@ -8013,7 +7863,8 @@ class _StaffDetailScreenState extends State<StaffDetailScreen> {
     final attendanceReports =
         allReports.where((e) => e.category.startsWith('勤怠')).toList();
     final workReports = allReports
-        .where((e) => e.category == '業務報告' || e.category == '業務相談')
+        .where((e) =>
+            e.category == '業務報告' || e.category == '業務相談' || e.category == '周知確認')
         .toList();
     final absentCount = monthlyCategoryCountForStaff(allReports, staffId, '勤怠(欠勤)');
     final lateCount = monthlyCategoryCountForStaff(allReports, staffId, '勤怠(遅刻)');
@@ -8023,6 +7874,11 @@ class _StaffDetailScreenState extends State<StaffDetailScreen> {
     final reportCategoryById = {
       for (final e in SvReportStore.instance.entries)
         if (e.id != null) e.id!: e.category,
+    };
+    // announcementIdが紐づく報告(周知確認の質問)で、元のお知らせのタイトルを
+    // 一覧・詳細画面に注記するためのルックアップ。
+    final announcementTitleById = {
+      for (final a in SentAnnouncementStore.instance.entries) a.id: a.title,
     };
 
     final tasks = SentTaskStore.instance.entries.where((t) => t.staffId == staffId).toList();
@@ -8053,7 +7909,8 @@ class _StaffDetailScreenState extends State<StaffDetailScreen> {
                         style: const TextStyle(
                             color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 10),
-                    _entryList(attendanceReports, '勤怠関連の報告はありません。', reportCategoryById),
+                    _entryList(attendanceReports, '勤怠関連の報告はありません。', reportCategoryById,
+                        announcementTitleById),
                   ],
                 ),
               ),
@@ -8062,8 +7919,8 @@ class _StaffDetailScreenState extends State<StaffDetailScreen> {
                   style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
               _sectionCard(
-                  child: _entryList(
-                      workReports, '業務報告・相談の履歴はありません。', reportCategoryById)),
+                  child: _entryList(workReports, '業務報告・相談の履歴はありません。',
+                      reportCategoryById, announcementTitleById)),
               const SizedBox(height: 20),
               const Text('送ったタスクの状況',
                   style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
@@ -8081,12 +7938,19 @@ class _StaffDetailScreenState extends State<StaffDetailScreen> {
 class _StaffHistoryRow extends StatelessWidget {
   final HistoryEntry entry;
   final Map<String, String> reportCategoryById;
-  const _StaffHistoryRow({required this.entry, required this.reportCategoryById});
+  final Map<String, String> announcementTitleById;
+  const _StaffHistoryRow({
+    required this.entry,
+    required this.reportCategoryById,
+    required this.announcementTitleById,
+  });
 
   @override
   Widget build(BuildContext context) {
     final sourceReportCategory =
         entry.sourceReportId != null ? reportCategoryById[entry.sourceReportId] : null;
+    final sourceAnnouncementTitle =
+        entry.announcementId != null ? announcementTitleById[entry.announcementId] : null;
     return Material(
       color: Colors.transparent,
       borderRadius: BorderRadius.circular(12),
@@ -8107,6 +7971,7 @@ class _StaffHistoryRow extends StatelessWidget {
                   history: entry.history,
                   reviewedAction: entry.reviewedAction,
                   sourceReportCategory: sourceReportCategory,
+                  sourceAnnouncementTitle: sourceAnnouncementTitle,
                 ),
               ),
             ),
@@ -8131,6 +7996,14 @@ class _StaffHistoryRow extends StatelessWidget {
                     Text('元の報告:「$sourceReportCategory」への回答',
                         style: const TextStyle(
                             color: Color(0xFFA855F7),
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold)),
+                  ],
+                  if (sourceAnnouncementTitle != null) ...[
+                    const SizedBox(height: 2),
+                    Text('元のお知らせ:「$sourceAnnouncementTitle」への質問',
+                        style: const TextStyle(
+                            color: Color(0xFF06B6D4),
                             fontSize: 11,
                             fontWeight: FontWeight.bold)),
                   ],
@@ -8441,6 +8314,7 @@ class SvReportSummary {
   final List<ChatMessage> history;
   final SuggestedAction? reviewedAction;
   final String? sourceReportCategory;
+  final String? sourceAnnouncementTitle;
 
   const SvReportSummary({
     this.id,
@@ -8453,6 +8327,7 @@ class SvReportSummary {
     required this.history,
     this.reviewedAction,
     this.sourceReportCategory,
+    this.sourceAnnouncementTitle,
   });
 }
 
@@ -8592,6 +8467,14 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
                             Text('元の報告:「${s.sourceReportCategory}」への回答',
                                 style: const TextStyle(
                                     color: Color(0xFFA855F7),
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold)),
+                          ],
+                          if (s.sourceAnnouncementTitle != null) ...[
+                            const SizedBox(height: 4),
+                            Text('元のお知らせ:「${s.sourceAnnouncementTitle}」への質問',
+                                style: const TextStyle(
+                                    color: Color(0xFF06B6D4),
                                     fontSize: 12,
                                     fontWeight: FontWeight.bold)),
                           ],
