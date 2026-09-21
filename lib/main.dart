@@ -1901,6 +1901,9 @@ class HistoryEntry {
   final String? sourceTaskId;
   final String? announcementId;
   final String? sourceReportId;
+  /// SVが「⑤稼働確認」から配下スタッフの勤怠ステータスを手動変更した場合にtrue。
+  /// 本人による自己申告(チャット経由)との区別に使う。
+  final bool isManualBySv;
 
   HistoryEntry({
     this.id,
@@ -1919,6 +1922,7 @@ class HistoryEntry {
     this.sourceTaskId,
     this.announcementId,
     this.sourceReportId,
+    this.isManualBySv = false,
   }) : timestamp = timestamp ?? DateTime.now();
 
   IconData get icon => categoryStyle(category).icon;
@@ -1965,6 +1969,7 @@ class HistoryEntry {
       sourceTaskId: data['sourceTaskId'] as String?,
       announcementId: data['announcementId'] as String?,
       sourceReportId: data['sourceReportId'] as String?,
+      isManualBySv: data['isManualBySv'] as bool? ?? false,
       action: SuggestedAction.values.firstWhere(
         (a) => a.name == data['action'],
         orElse: () => SuggestedAction.approveOnly,
@@ -2067,6 +2072,12 @@ void showComingSoonDialog(BuildContext context, String label) {
 ({IconData icon, Color color}) categoryStyle(String category) {
   if (category.startsWith('勤怠(遅刻)')) {
     return (icon: Icons.access_time, color: const Color(0xFF3B82F6));
+  }
+  if (category.startsWith('勤怠(出勤)')) {
+    return (icon: Icons.check_circle, color: const Color(0xFF22C55E));
+  }
+  if (category.startsWith('勤怠(有給)')) {
+    return (icon: Icons.beach_access, color: const Color(0xFFA855F7));
   }
   if (category.startsWith('勤怠')) {
     return (icon: Icons.bedtime, color: const Color(0xFF3B82F6));
@@ -5473,6 +5484,68 @@ class _SummaryStatCard extends StatelessWidget {
 // 本日の勤怠一覧・本日の完了一覧(ホーム画面の統計カードから遷移)
 // ============================================================
 
+/// 「勤怠(X)」の4ステータス。出勤は今回新設(今まで明示的な報告手段が無かった)。
+const List<String> kAttendanceCategories = [
+  '勤怠(出勤)',
+  '勤怠(遅刻)',
+  '勤怠(欠勤)',
+  '勤怠(有給)',
+];
+
+/// SVが配下スタッフの勤怠ステータスを手動で変更する。通常のHistoryStore.add()は
+/// 「投稿者=自分」を前提にしているため、SVが他スタッフの代わりに書き込むこの用途には
+/// 使えず、reportsへ直接書き込む。SV自身のuidをsupervisorId、対象スタッフのuidを
+/// staffIdとして記録し、isManualBySv:trueを立てる(このフラグ付きの勤怠カテゴリに限り
+/// SVによる代理書き込みを許可するFirestoreルールとセットで機能する)。
+/// SV自身が今まさに確定させた内容のため、reviewedAt等も書き込み時点で自己承認済み扱いに
+/// しておく(SVが自分の変更を改めて「未確認」として承認する手間を避けるため)。
+Future<void> submitManualAttendanceStatus({
+  required String staffId,
+  String? staffName,
+  required String status, // '出勤' / '遅刻' / '欠勤' / '有給'
+}) async {
+  final uid = FirebaseAuth.instance.currentUser?.uid;
+  if (uid == null) return;
+  final now = DateTime.now();
+  final docId = FirebaseFirestore.instance.collection('reports').doc().id;
+  await FirebaseFirestore.instance.collection('reports').doc(docId).set({
+    'staffId': staffId,
+    'staffName': staffName,
+    'supervisorId': uid,
+    'category': '勤怠($status)',
+    'title': status,
+    'timestamp': Timestamp.fromDate(now),
+    'action': SuggestedAction.approveOnly.name,
+    'fields': [
+      {'label': '変更者', 'value': 'SV(${UserSession.instance.displayName ?? shortStaffId(uid)})による手動変更'},
+    ],
+    'history': <Map<String, dynamic>>[],
+    'isManualBySv': true,
+    'reviewedBy': uid,
+    'reviewedAt': Timestamp.fromDate(now),
+    'reviewedAction': SuggestedAction.approveOnly.name,
+    'approvedAt': Timestamp.fromDate(now),
+  }).timeout(const Duration(seconds: 10));
+}
+
+/// 当日分の勤怠関連reportsから、スタッフごとの「現在の勤怠ステータス」を1件ずつ解決する。
+/// スタッフ自身の自己申告(チャット経由)とSVによる手動変更(isManualBySv)は区別せず、
+/// 同じ日に複数件あればtimestampが新しい方を常に優先する(訂正がどちら側から
+/// 入っても、常に最後の変更が反映されるようにするため)。
+Map<String, HistoryEntry> resolveLatestAttendanceByStaffId(List<HistoryEntry> todayEntries) {
+  final result = <String, HistoryEntry>{};
+  for (final e in todayEntries) {
+    final staffId = e.staffId;
+    if (staffId == null) continue;
+    if (!kAttendanceCategories.contains(e.category)) continue;
+    final current = result[staffId];
+    if (current == null || e.timestamp.isAfter(current.timestamp)) {
+      result[staffId] = e;
+    }
+  }
+  return result;
+}
+
 class AttendanceOverviewScreen extends StatefulWidget {
   const AttendanceOverviewScreen({super.key});
 
@@ -5499,25 +5572,79 @@ class _AttendanceOverviewScreenState extends State<AttendanceOverviewScreen> {
     if (mounted) setState(() {});
   }
 
+  void _showStatusPicker(StaffProfile staff, String currentStatus) {
+    final name = staff.displayName ?? shortStaffId(staff.uid);
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF141826),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(name,
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 4),
+                Text('現在: $currentStatus',
+                    style: TextStyle(color: Colors.grey[500], fontSize: 12.5)),
+                const SizedBox(height: 16),
+                for (final status in const ['出勤', '遅刻', '欠勤', '有給'])
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: ChoiceButton(
+                      label: status == currentStatus ? '$status(現在)' : status,
+                      icon: categoryStyle('勤怠($status)').icon,
+                      color: categoryStyle('勤怠($status)').color,
+                      onTap: () {
+                        Navigator.of(ctx).pop();
+                        if (status == currentStatus) return;
+                        submitManualAttendanceStatus(
+                          staffId: staff.uid,
+                          staffName: name,
+                          status: status,
+                        );
+                      },
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final todayEntries =
         SvReportStore.instance.entries.where((e) => _isToday(e.timestamp)).toList();
-    final absenceEntries = <String, HistoryEntry>{};
-    final latenessEntries = <String, HistoryEntry>{};
-    for (final e in todayEntries) {
-      if (e.staffId == null) continue;
-      if (e.category == '勤怠(欠勤)') {
-        absenceEntries[e.staffId!] = e;
-      } else if (e.category == '勤怠(遅刻)') {
-        latenessEntries[e.staffId!] = e;
+    final latestByStaffId = resolveLatestAttendanceByStaffId(todayEntries);
+    final staff = StaffRosterStore.instance.staff;
+
+    final presentStaff = <StaffProfile>[];
+    final lateEntries = <MapEntry<StaffProfile, HistoryEntry>>[];
+    final absentEntries = <MapEntry<StaffProfile, HistoryEntry>>[];
+    final paidLeaveEntries = <MapEntry<StaffProfile, HistoryEntry>>[];
+
+    for (final s in staff) {
+      final entry = latestByStaffId[s.uid];
+      if (entry == null || entry.category == '勤怠(出勤)') {
+        presentStaff.add(s);
+      } else if (entry.category == '勤怠(遅刻)') {
+        lateEntries.add(MapEntry(s, entry));
+      } else if (entry.category == '勤怠(欠勤)') {
+        absentEntries.add(MapEntry(s, entry));
+      } else if (entry.category == '勤怠(有給)') {
+        paidLeaveEntries.add(MapEntry(s, entry));
       }
     }
-    final staff = StaffRosterStore.instance.staff;
-    final presentStaff = staff
-        .where((s) =>
-            !absenceEntries.containsKey(s.uid) && !latenessEntries.containsKey(s.uid))
-        .toList();
 
     return Scaffold(
       backgroundColor: const Color(0xFF0A0E1A),
@@ -5541,7 +5668,11 @@ class _AttendanceOverviewScreenState extends State<AttendanceOverviewScreen> {
                 children: presentStaff.isEmpty
                     ? [const _EmptyRow(label: '該当者はいません。')]
                     : presentStaff
-                        .map((s) => _StaffNameRow(name: s.displayName ?? shortStaffId(s.uid)))
+                        .map((s) => _AttendanceStaffRow(
+                              name: s.displayName ?? shortStaffId(s.uid),
+                              entry: null,
+                              onTap: () => _showStatusPicker(s, '出勤'),
+                            ))
                         .toList(),
               ),
               const SizedBox(height: 20),
@@ -5549,20 +5680,48 @@ class _AttendanceOverviewScreenState extends State<AttendanceOverviewScreen> {
                 title: '遅刻',
                 icon: Icons.access_time,
                 color: const Color(0xFF3B82F6),
-                count: latenessEntries.length,
-                children: latenessEntries.isEmpty
+                count: lateEntries.length,
+                children: lateEntries.isEmpty
                     ? [const _EmptyRow(label: '該当者はいません。')]
-                    : latenessEntries.values.map((e) => _AttendanceReportRow(entry: e)).toList(),
+                    : lateEntries
+                        .map((me) => _AttendanceStaffRow(
+                              name: me.key.displayName ?? shortStaffId(me.key.uid),
+                              entry: me.value,
+                              onTap: () => _showStatusPicker(me.key, '遅刻'),
+                            ))
+                        .toList(),
               ),
               const SizedBox(height: 20),
               _AttendanceSection(
                 title: '欠勤',
                 icon: Icons.event_busy,
                 color: const Color(0xFFEF4444),
-                count: absenceEntries.length,
-                children: absenceEntries.isEmpty
+                count: absentEntries.length,
+                children: absentEntries.isEmpty
                     ? [const _EmptyRow(label: '該当者はいません。')]
-                    : absenceEntries.values.map((e) => _AttendanceReportRow(entry: e)).toList(),
+                    : absentEntries
+                        .map((me) => _AttendanceStaffRow(
+                              name: me.key.displayName ?? shortStaffId(me.key.uid),
+                              entry: me.value,
+                              onTap: () => _showStatusPicker(me.key, '欠勤'),
+                            ))
+                        .toList(),
+              ),
+              const SizedBox(height: 20),
+              _AttendanceSection(
+                title: '有給',
+                icon: Icons.beach_access,
+                color: const Color(0xFFA855F7),
+                count: paidLeaveEntries.length,
+                children: paidLeaveEntries.isEmpty
+                    ? [const _EmptyRow(label: '該当者はいません。')]
+                    : paidLeaveEntries
+                        .map((me) => _AttendanceStaffRow(
+                              name: me.key.displayName ?? shortStaffId(me.key.uid),
+                              entry: me.value,
+                              onTap: () => _showStatusPicker(me.key, '有給'),
+                            ))
+                        .toList(),
               ),
             ],
           ),
@@ -5620,25 +5779,6 @@ class _AttendanceSection extends StatelessWidget {
   }
 }
 
-class _StaffNameRow extends StatelessWidget {
-  final String name;
-  const _StaffNameRow({required this.name});
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(
-        children: [
-          const Icon(Icons.person, color: Colors.white38, size: 16),
-          const SizedBox(width: 8),
-          Text(name, style: const TextStyle(color: Colors.white70, fontSize: 13.5)),
-        ],
-      ),
-    );
-  }
-}
-
 class _EmptyRow extends StatelessWidget {
   final String label;
   const _EmptyRow({required this.label});
@@ -5652,40 +5792,32 @@ class _EmptyRow extends StatelessWidget {
   }
 }
 
-class _AttendanceReportRow extends StatelessWidget {
-  final HistoryEntry entry;
-  const _AttendanceReportRow({required this.entry});
+/// 勤怠一覧の1行。タップするとSVによる手動ステータス変更メニューが開く
+/// (自動判定分・手動変更分を問わず、常にこの画面からその場で変更できるようにするため)。
+/// `entry`がnull(出勤=既定値で報告が無いスタッフ)の場合は名前のみ表示する。
+class _AttendanceStaffRow extends StatelessWidget {
+  final String name;
+  final HistoryEntry? entry;
+  final VoidCallback onTap;
+  const _AttendanceStaffRow({required this.name, required this.entry, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    final reasonField = entry.fields.firstWhere(
-      (f) => f.key == '理由',
-      orElse: () => const MapEntry('理由', '-'),
-    );
+    final e = entry;
+    String? subtitle;
+    if (e != null) {
+      final detailField = e.fields.firstWhere(
+        (f) => f.key == '理由' || f.key == '変更者',
+        orElse: () => const MapEntry('', ''),
+      );
+      subtitle = detailField.value.isEmpty ? e.time : '${detailField.value} ・ ${e.time}';
+    }
     return Material(
       color: Colors.transparent,
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
-        onTap: () {
-          Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => SvSummaryScreen(
-                summary: SvReportSummary(
-                  id: entry.id,
-                  category: entry.category,
-                  icon: entry.icon,
-                  color: entry.color,
-                  time: entry.time,
-                  fields: entry.fields,
-                  action: entry.action,
-                  history: entry.history,
-                  reviewedAction: entry.reviewedAction,
-                ),
-              ),
-            ),
-          );
-        },
+        onTap: onTap,
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 6),
           child: Row(
@@ -5697,11 +5829,11 @@ class _AttendanceReportRow extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(entry.staffName ?? shortStaffId(entry.staffId),
-                        style: const TextStyle(color: Colors.white70, fontSize: 13.5)),
-                    const SizedBox(height: 2),
-                    Text('${reasonField.value} ・ ${entry.time}',
-                        style: TextStyle(color: Colors.grey[600], fontSize: 11.5)),
+                    Text(name, style: const TextStyle(color: Colors.white70, fontSize: 13.5)),
+                    if (subtitle != null) ...[
+                      const SizedBox(height: 2),
+                      Text(subtitle, style: TextStyle(color: Colors.grey[600], fontSize: 11.5)),
+                    ],
                   ],
                 ),
               ),

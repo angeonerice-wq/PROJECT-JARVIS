@@ -21,18 +21,39 @@ service cloud.firestore {
             || request.resource.data.approvedAt is timestamp);
     }
 
+    // SVが「⑤稼働確認」から配下スタッフの勤怠ステータスを手動変更する場合の例外。
+    // 通常の書き込みは本人のstaffIdでの作成のみに限定しているが、この用途に限り
+    // SVが対象スタッフのstaffIdで書き込めるようにする。悪用を防ぐため、
+    // - isManualBySv:trueであること(この専用フラグを立てた書き込みのみ許可)
+    // - supervisorIdが自分自身のuidであること(SV自身に固定、なりすまし防止)
+    // - categoryが勤怠の4ステータスのいずれかであること(他カテゴリへの流用を防止)
+    // - staffIdが実際に自分の配下スタッフ(supervisorId==自分)であること
+    // の4点すべてを満たす場合のみ許可する。
+    function isValidManualAttendance() {
+      return isSv()
+        && request.resource.data.isManualBySv == true
+        && request.resource.data.supervisorId == request.auth.uid
+        && request.resource.data.category in
+             ['勤怠(出勤)', '勤怠(遅刻)', '勤怠(欠勤)', '勤怠(有給)']
+        && request.resource.data.staffId is string
+        && get(/databases/$(database)/documents/users/$(request.resource.data.staffId))
+             .data.supervisorId == request.auth.uid;
+    }
+
     // スタッフが作成した業務報告・チャット履歴。
     // 本人はいつでも自分の報告を作成・閲覧できる。SVは全スタッフの報告を閲覧できるが、
-    // 書き込みは(SVであっても)本人のstaffIdでの作成のみに限定する。
+    // 書き込みは原則(SVであっても)本人のstaffIdでの作成のみに限定する。
+    // 唯一の例外がisValidManualAttendance()(SVによる勤怠ステータスの手動変更)。
     match /reports/{reportId} {
       allow create: if request.auth != null
-                    && request.resource.data.staffId == request.auth.uid
                     && request.resource.data.keys().hasAll(
                          ['staffId', 'category', 'title', 'timestamp', 'action', 'fields', 'history']
                        )
                     && request.resource.data.category is string
                     && request.resource.data.title is string
-                    && request.resource.data.timestamp is timestamp;
+                    && request.resource.data.timestamp is timestamp
+                    && (request.resource.data.staffId == request.auth.uid
+                        || isValidManualAttendance());
 
       // SVが読めるのは「自分のチーム(supervisorId==自分)」のreportsのみに限定する。
       // 本人が自分の報告を読める条件はこれまでと変更なし。
