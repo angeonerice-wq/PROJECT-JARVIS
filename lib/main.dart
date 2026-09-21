@@ -391,6 +391,8 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   int _selectedIndex = 2; // 初期表示はJARVISタブ(ホームと同じ内容)
   SummaryReportTab? _summaryInitialTab;
+  SummaryScrollTarget? _summaryScrollTarget;
+  int _summaryScrollRequestId = 0;
 
   @override
   void initState() {
@@ -414,9 +416,14 @@ class _HomePageState extends State<HomePage> {
   }
 
   /// ホーム画面の「未確認」「要対応」カードから、サマリータブの該当タブを選択した状態で開く。
-  void _openSummaryTab(SummaryReportTab tab) {
+  /// scrollToを指定すると、開いた際に該当セクションまで自動スクロールする
+  /// (同じセクションへの連続タップでも毎回スクロールし直せるよう、リクエストごとに
+  /// _summaryScrollRequestIdを進める)。
+  void _openSummaryTab(SummaryReportTab tab, {SummaryScrollTarget? scrollTo}) {
     setState(() {
       _summaryInitialTab = tab;
+      _summaryScrollTarget = scrollTo;
+      _summaryScrollRequestId++;
       _selectedIndex = 3;
     });
   }
@@ -452,7 +459,11 @@ class _HomePageState extends State<HomePage> {
             isSv
                 ? _SvHomeTabBody(onOpenSummaryTab: _openSummaryTab)
                 : _HomeTabBody(onOpenSummaryTab: _openSummaryTab, onOpenHistoryTab: _openHistoryTab),
-            SummaryTabBody(initialTab: _summaryInitialTab),
+            SummaryTabBody(
+              initialTab: _summaryInitialTab,
+              scrollTarget: _summaryScrollTarget,
+              scrollRequestId: _summaryScrollRequestId,
+            ),
             const SettingsTabBody(),
           ],
         ),
@@ -1108,7 +1119,7 @@ class _HomeNoticeCard extends StatelessWidget {
 /// 稼働確認/スタッフ別管理)へのナビゲーションと、当日の集計サマリー
 /// (「本日の状況」カード。旧`_HomeTabBody`のisSv分岐から移植)を表示する。
 class _SvHomeTabBody extends StatefulWidget {
-  final void Function(SummaryReportTab tab)? onOpenSummaryTab;
+  final void Function(SummaryReportTab tab, {SummaryScrollTarget? scrollTo})? onOpenSummaryTab;
 
   const _SvHomeTabBody({this.onOpenSummaryTab});
 
@@ -1183,7 +1194,8 @@ class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
           iconColor: Colors.amber,
           title: '未確認の報告',
           count: unreviewedCount,
-          onTap: () => widget.onOpenSummaryTab?.call(SummaryReportTab.unreviewed),
+          onTap: () => widget.onOpenSummaryTab?.call(SummaryReportTab.unreviewed,
+              scrollTo: SummaryScrollTarget.reportsList),
         ),
       if (unconfirmedAnnouncementCount > 0)
         _HomeNoticeCard(
@@ -1191,7 +1203,8 @@ class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
           iconColor: const Color(0xFF06B6D4),
           title: '未確認のお知らせ',
           count: unconfirmedAnnouncementCount,
-          onTap: () => widget.onOpenSummaryTab?.call(SummaryReportTab.unreviewed),
+          onTap: () => widget.onOpenSummaryTab?.call(SummaryReportTab.unreviewed,
+              scrollTo: SummaryScrollTarget.unconfirmedAnnouncements),
         ),
       if (needsActionCount > 0)
         _HomeNoticeCard(
@@ -4745,6 +4758,10 @@ class _CategoryCount {
 /// SVサマリー画面「全スタッフの報告一覧」の絞り込みタブ。
 enum SummaryReportTab { unreviewed, needsAction, all }
 
+/// ホーム画面の通知バーからサマリー画面を開いた際、自動スクロールで
+/// 見せたいセクション。
+enum SummaryScrollTarget { unconfirmedAnnouncements, reportsList }
+
 extension SummaryReportTabX on SummaryReportTab {
   String get label {
     switch (this) {
@@ -4782,7 +4799,19 @@ class SummaryTabBody extends StatefulWidget {
   /// nullの場合は前回選択(初期値は全件)を維持する。
   final SummaryReportTab? initialTab;
 
-  const SummaryTabBody({super.key, this.initialTab});
+  /// ホーム画面の通知バーから開いた際、自動スクロールで見せたいセクション。
+  final SummaryScrollTarget? scrollTarget;
+
+  /// scrollTargetが変わっていなくても(同じ通知バーを連続でタップした場合等)
+  /// 毎回スクロールし直せるよう、リクエストのたびに増やすカウンター。
+  final int scrollRequestId;
+
+  const SummaryTabBody({
+    super.key,
+    this.initialTab,
+    this.scrollTarget,
+    this.scrollRequestId = 0,
+  });
 
   @override
   State<SummaryTabBody> createState() => _SummaryTabBodyState();
@@ -4790,6 +4819,8 @@ class SummaryTabBody extends StatefulWidget {
 
 class _SummaryTabBodyState extends State<SummaryTabBody> {
   late SummaryReportTab _selectedTab = widget.initialTab ?? SummaryReportTab.all;
+  final GlobalKey _unconfirmedAnnouncementsKey = GlobalKey();
+  final GlobalKey _reportsListKey = GlobalKey();
 
   @override
   void initState() {
@@ -4800,6 +4831,9 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
     AssignedTaskStore.instance.addListener(_onChanged);
     SentAnnouncementStore.instance.addListener(_onChanged);
     StaffRosterStore.instance.addListener(_onChanged);
+    if (widget.scrollTarget != null) {
+      _scrollToTarget(widget.scrollTarget!);
+    }
   }
 
   @override
@@ -4820,6 +4854,33 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
     if (widget.initialTab != null && widget.initialTab != oldWidget.initialTab) {
       setState(() => _selectedTab = widget.initialTab!);
     }
+    // 通知バーから開いた場合、該当セクションまで自動スクロールする。
+    // scrollRequestIdで比較するため、同じセクションへの連続タップでも毎回反応する。
+    if (widget.scrollTarget != null &&
+        widget.scrollRequestId != oldWidget.scrollRequestId) {
+      _scrollToTarget(widget.scrollTarget!);
+    }
+  }
+
+  /// 指定セクションが画面内に見えるまで自動スクロールする。IndexedStackで
+  /// この画面自体は既にビルド済みのことが多いが、タブ切り替え直後は対象セクションの
+  /// レイアウトが確定していない場合があるため、1フレーム後に実行する。
+  void _scrollToTarget(SummaryScrollTarget target) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final key = switch (target) {
+        SummaryScrollTarget.unconfirmedAnnouncements => _unconfirmedAnnouncementsKey,
+        SummaryScrollTarget.reportsList => _reportsListKey,
+      };
+      final targetContext = key.currentContext;
+      if (targetContext == null) return;
+      Scrollable.ensureVisible(
+        targetContext,
+        duration: const Duration(milliseconds: 400),
+        curve: Curves.easeOut,
+        alignment: 0,
+      );
+    });
   }
 
   void _onChanged() {
@@ -5080,9 +5141,12 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
             if (_selectedTab == SummaryReportTab.unreviewed &&
                 unconfirmedAnnouncements.isNotEmpty) ...[
               const SizedBox(height: 24),
-              const Text('未確認のお知らせ',
-                  style:
-                      TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+              KeyedSubtree(
+                key: _unconfirmedAnnouncementsKey,
+                child: const Text('未確認のお知らせ',
+                    style: TextStyle(
+                        color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+              ),
               const SizedBox(height: 12),
               Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -5175,8 +5239,12 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
               ),
             ],
             const SizedBox(height: 24),
-            const Text('全スタッフの報告一覧',
-                style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+            KeyedSubtree(
+              key: _reportsListKey,
+              child: const Text('全スタッフの報告一覧',
+                  style:
+                      TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+            ),
             const SizedBox(height: 12),
             Row(
               children: [
