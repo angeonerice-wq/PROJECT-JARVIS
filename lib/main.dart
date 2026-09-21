@@ -758,9 +758,9 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
     // 「SVからのタスク」の未完了件数。新規購読は追加せず、既に購読済みの
     // HistoryStore(自分が提出した報告。sourceTaskIdが紐づいた完了報告を含む)と
     // AssignedTaskStore(自分に割り当てられた全タスク)を突き合わせて都度算出する。
-    // 繰り返し設定を考慮した共通関数isTaskDoneForTodayで判定する。
+    // 繰り返し設定を考慮した共通関数needsTaskActionTodayで判定する。
     final incompleteTaskCount = AssignedTaskStore.instance.entries
-        .where((t) => !isTaskDoneForToday(t, HistoryStore.instance.entries))
+        .where((t) => needsTaskActionToday(t, HistoryStore.instance.entries))
         .length;
 
     // お知らせの未確認件数。confirmedAtがannouncementsドキュメント自身に
@@ -2394,22 +2394,26 @@ bool isTaskScheduledToday(AssignedTask task) {
   }
 }
 
-/// 「本日対応不要(完了扱いでよい)」かどうかを一括判定する共通関数。
-/// - once: 全期間で1件でも完了報告があれば完了(従来のcompletedTaskIdsFromと同じ挙動)
-/// - daily/weekly/dateRange: 今日が対象日でなければ対応不要として完了扱い、
-///   対象日なら本日分の完了報告があるかで判定する
-bool isTaskDoneForToday(AssignedTask task, List<HistoryEntry> entries) {
-  bool hasCompletionOn(bool Function(DateTime) dateMatch) => entries.any((e) =>
-      e.sourceTaskId == task.id && e.category == 'タスク完了' && dateMatch(e.timestamp));
-
-  if (task.recurrence == TaskRecurrence.once) {
-    return hasCompletionOn((_) => true);
-  }
-  if (!isTaskScheduledToday(task)) {
-    return true;
-  }
-  return hasCompletionOn(_isToday);
+/// 実際に完了報告があったかどうかを、証拠(reportsの存在)のみで判定する。
+/// 「今日が対象日でない」ことを理由に完了扱いにする、といった推測は行わない
+/// (それをやると、まだ一度も完了報告していないタスクが「完了済み」と誤表示される
+/// バグになる。過去のisTaskDoneForTodayで実際に発生した不具合)。
+/// - once: 全期間で1件でも完了報告があれば完了
+/// - daily/weekly/dateRange: 本日分の完了報告があれば完了
+bool hasTaskCompletionRecord(AssignedTask task, List<HistoryEntry> entries) {
+  bool matchesDate(DateTime ts) =>
+      task.recurrence == TaskRecurrence.once || _isToday(ts);
+  return entries.any(
+      (e) => e.sourceTaskId == task.id && e.category == 'タスク完了' && matchesDate(e.timestamp));
 }
+
+/// 「今すぐ対応が必要か」を判定する共通関数。ホーム通知・スタッフのタスク一覧など、
+/// 対応が必要なものだけを出したい場面で使う。今日が対象日でないタスク(例:今日が
+/// 対象曜日に含まれない毎週タスク)は、対応不要として除外する。
+/// 完了状況そのもの(完了済み/未完了)を表示する場面ではisTaskDoneForTodayではなく
+/// hasTaskCompletionRecordを使うこと(「対象日でない」と「完了済み」は別概念のため)。
+bool needsTaskActionToday(AssignedTask task, List<HistoryEntry> entries) =>
+    isTaskScheduledToday(task) && !hasTaskCompletionRecord(task, entries);
 
 /// ログイン中スタッフに割り当てられたタスクをリアルタイム購読するストア。
 /// `HistoryStore`と同型のパターン(authStateChanges()を直接見て、staffId一致で
@@ -4895,7 +4899,7 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
         : breakdown.map((e) => e.count).reduce((a, b) => a > b ? a : b);
 
     final incompleteTaskCount = AssignedTaskStore.instance.entries
-        .where((t) => !isTaskDoneForToday(t, staffEntries))
+        .where((t) => needsTaskActionToday(t, staffEntries))
         .length;
     final pendingApprovalCount = staffEntries.where((e) => e.reviewedAt == null).length;
 
@@ -6422,7 +6426,7 @@ class _AssignedTasksScreenState extends State<AssignedTasksScreen> {
     // ホーム画面の未完了件数と同じ共通関数(繰り返し設定を考慮)。
     // この一覧は未完了のみを表示する(完了履歴はSV側の報告受領機能で参照する想定)。
     final tasks = AssignedTaskStore.instance.entries
-        .where((t) => !isTaskDoneForToday(t, HistoryStore.instance.entries))
+        .where((t) => needsTaskActionToday(t, HistoryStore.instance.entries))
         .toList();
 
     return Scaffold(
@@ -7249,8 +7253,11 @@ class _SentTasksScreenState extends State<SentTasksScreen> {
       for (final s in StaffRosterStore.instance.staff) s.uid: s.displayName,
     };
 
-    // 繰り返し設定を考慮した共通関数で判定する(taskId単位ではなくtask単位)。
-    bool isDone(AssignedTask t) => isTaskDoneForToday(t, SvReportStore.instance.entries);
+    // 完了済み/未完了タブとステータスチップは「実際に完了報告があったか」の
+    // 事実ベースで判定する(needsTaskActionTodayは「今すぐ対応が必要か」用の
+    // 別の判定で、今日が対象日でないタスクを誤って「完了済み」扱いしてしまうため
+    // ここでは使わない)。
+    bool isDone(AssignedTask t) => hasTaskCompletionRecord(t, SvReportStore.instance.entries);
 
     List<AssignedTask> filtered;
     switch (_selectedTab) {
