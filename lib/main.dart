@@ -1149,24 +1149,29 @@ class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
     final activeCount = (totalStaffCount - absentCount).clamp(0, totalStaffCount);
     final completedTaskCount =
         todayEntries.where((e) => e.category == 'タスク完了').length;
-    // 未確認件数には、reports側の未レビュー件数(本日分)に加えて、
-    // announcements側でまだ「確認しました」を押されていない件数(全期間、
-    // 確認されるまでSVが気にすべき情報のため本日に限定しない)を合算する。
-    // 「要対応」側には含めない(未確認と要対応は意味合いが異なるため)。
+    // 未確認件数はreports(自チームの報告)のみを対象にする。announcements側の
+    // 未確認は意味が異なる別カウント(unconfirmedAnnouncementCount)として分離し、
+    // 通知バーの別カードで表示する(reports/announcementsを1つの数字に混在させない)。
+    final unreviewedCount = todayEntries.where((e) => e.reviewedAt == null).length;
     final unconfirmedAnnouncementCount =
         SentAnnouncementStore.instance.entries.where((a) => !a.isConfirmed).length;
-    final unreviewedCount = todayEntries.where((e) => e.reviewedAt == null).length +
-        unconfirmedAnnouncementCount;
     final needsActionCount = todayEntries
         .where((e) =>
             e.reviewedAction == SuggestedAction.needsReschedule ||
             e.reviewedAction == SuggestedAction.escalate)
         .length;
 
-    // 「本日の状況」カードの最終更新時刻。このカードの4項目は全てSvReportStore
-    // (自チームのreports)から算出しているため、その本日分の最新timestampを表示する。
-    final todayUpdateLabel =
-        latestTodayUpdateLabel(SvReportStore.instance.entries.map((e) => e.timestamp));
+    // 「本日の状況」カードの最終更新時刻。投稿時刻(timestamp)だけでなく、
+    // SVがレビュー操作をした時刻(reviewedAt)も対象に含める。timestampだけだと、
+    // SVが既存の報告を承認/再調整依頼/エスカレーションしても(reviewedAtが変わり
+    // 画面上の件数は変化するのに)timestampは変わらないため「最終更新」が
+    // 動いているように見えない、という不整合があったため。
+    final todayUpdateLabel = latestTodayUpdateLabel([
+      ...SvReportStore.instance.entries.map((e) => e.timestamp),
+      ...SvReportStore.instance.entries
+          .where((e) => e.reviewedAt != null)
+          .map((e) => e.reviewedAt!),
+    ]);
 
     // ホーム画面上部の通知バー。スタッフ側の`noticeCards`と対称の設計で、該当件数が
     // 0の項目はカードごと非表示にする。件数・タップ先は下の「本日の状況」カードの
@@ -1178,6 +1183,14 @@ class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
           iconColor: Colors.amber,
           title: '未確認の報告',
           count: unreviewedCount,
+          onTap: () => widget.onOpenSummaryTab?.call(SummaryReportTab.unreviewed),
+        ),
+      if (unconfirmedAnnouncementCount > 0)
+        _HomeNoticeCard(
+          icon: Icons.campaign_outlined,
+          iconColor: const Color(0xFF06B6D4),
+          title: '未確認のお知らせ',
+          count: unconfirmedAnnouncementCount,
           onTap: () => widget.onOpenSummaryTab?.call(SummaryReportTab.unreviewed),
         ),
       if (needsActionCount > 0)
@@ -1253,17 +1266,11 @@ class _SvHomeTabBodyState extends State<_SvHomeTabBody> {
                             color: Colors.white,
                             fontSize: 16,
                             fontWeight: FontWeight.bold)),
-                    Row(
-                      children: [
-                        Text(
-                            todayUpdateLabel != null
-                                ? '最終更新 $todayUpdateLabel'
-                                : '最終更新 -',
-                            style: TextStyle(color: Colors.grey[500], fontSize: 12)),
-                        const SizedBox(width: 4),
-                        Icon(Icons.refresh, color: Colors.grey[500], size: 14),
-                      ],
-                    ),
+                    Text(
+                        todayUpdateLabel != null
+                            ? '最終更新 $todayUpdateLabel'
+                            : '最終更新 -',
+                        style: TextStyle(color: Colors.grey[500], fontSize: 12)),
                   ],
                 ),
                 const Divider(color: Colors.white12, height: 24),
