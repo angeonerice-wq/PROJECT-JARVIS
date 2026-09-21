@@ -758,9 +758,9 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
     // 「SVからのタスク」の未完了件数。新規購読は追加せず、既に購読済みの
     // HistoryStore(自分が提出した報告。sourceTaskIdが紐づいた完了報告を含む)と
     // AssignedTaskStore(自分に割り当てられた全タスク)を突き合わせて都度算出する。
-    final completedTaskIds = completedTaskIdsFrom(HistoryStore.instance.entries);
+    // 繰り返し設定を考慮した共通関数isTaskDoneForTodayで判定する。
     final incompleteTaskCount = AssignedTaskStore.instance.entries
-        .where((t) => !completedTaskIds.contains(t.id))
+        .where((t) => !isTaskDoneForToday(t, HistoryStore.instance.entries))
         .length;
 
     // お知らせの未確認件数。confirmedAtがannouncementsドキュメント自身に
@@ -2322,6 +2322,10 @@ class StaffRosterStore extends ChangeNotifier {
 }
 
 /// SVがスタッフへ割り当てたタスク(`tasks`コレクション)のクライアント用モデル。
+/// タスクの繰り返し設定。既存タスク(recurrenceフィールド無し)は
+/// 'once'として扱う(後方互換)。
+enum TaskRecurrence { once, daily, weekly, dateRange }
+
 class AssignedTask {
   final String id;
   final String staffId;
@@ -2330,6 +2334,10 @@ class AssignedTask {
   final String title;
   final String detail;
   final DateTime createdAt;
+  final TaskRecurrence recurrence;
+  final List<int> weekdays; // recurrence==weeklyの場合のみ使用(DateTime.weekday準拠、1=月〜7=日)
+  final DateTime? startDate; // recurrence==dateRangeの場合のみ使用
+  final DateTime? endDate; // recurrence==dateRangeの場合のみ使用
 
   const AssignedTask({
     required this.id,
@@ -2339,12 +2347,18 @@ class AssignedTask {
     required this.title,
     required this.detail,
     required this.createdAt,
+    this.recurrence = TaskRecurrence.once,
+    this.weekdays = const [],
+    this.startDate,
+    this.endDate,
   });
 
   String get time => formatRelativeTime(createdAt);
 
   factory AssignedTask.fromFirestore(String id, Map<String, dynamic> data) {
     final ts = data['createdAt'];
+    final startTs = data['startDate'];
+    final endTs = data['endDate'];
     return AssignedTask(
       id: id,
       staffId: data['staffId'] as String? ?? '',
@@ -2353,8 +2367,48 @@ class AssignedTask {
       title: data['title'] as String? ?? '',
       detail: data['detail'] as String? ?? '',
       createdAt: ts is Timestamp ? ts.toDate() : DateTime.now(),
+      recurrence: TaskRecurrence.values
+          .firstWhere((r) => r.name == data['recurrence'], orElse: () => TaskRecurrence.once),
+      weekdays: ((data['weekdays'] as List?)?.map((e) => e as int).toList()) ?? const [],
+      startDate: startTs is Timestamp ? startTs.toDate() : null,
+      endDate: endTs is Timestamp ? endTs.toDate() : null,
     );
   }
+}
+
+/// そのタスクが「今日」対応対象かどうか。once/dailyは常にtrue、weeklyは
+/// weekdaysに今日の曜日が含まれるか、dateRangeは今日がstartDate〜endDateの
+/// 範囲内かで判定する。
+bool isTaskScheduledToday(AssignedTask task) {
+  final now = DateTime.now();
+  switch (task.recurrence) {
+    case TaskRecurrence.once:
+    case TaskRecurrence.daily:
+      return true;
+    case TaskRecurrence.weekly:
+      return task.weekdays.contains(now.weekday);
+    case TaskRecurrence.dateRange:
+      if (task.startDate == null || task.endDate == null) return false;
+      final today = DateTime(now.year, now.month, now.day);
+      return !today.isBefore(task.startDate!) && !today.isAfter(task.endDate!);
+  }
+}
+
+/// 「本日対応不要(完了扱いでよい)」かどうかを一括判定する共通関数。
+/// - once: 全期間で1件でも完了報告があれば完了(従来のcompletedTaskIdsFromと同じ挙動)
+/// - daily/weekly/dateRange: 今日が対象日でなければ対応不要として完了扱い、
+///   対象日なら本日分の完了報告があるかで判定する
+bool isTaskDoneForToday(AssignedTask task, List<HistoryEntry> entries) {
+  bool hasCompletionOn(bool Function(DateTime) dateMatch) => entries.any((e) =>
+      e.sourceTaskId == task.id && e.category == 'タスク完了' && dateMatch(e.timestamp));
+
+  if (task.recurrence == TaskRecurrence.once) {
+    return hasCompletionOn((_) => true);
+  }
+  if (!isTaskScheduledToday(task)) {
+    return true;
+  }
+  return hasCompletionOn(_isToday);
 }
 
 /// ログイン中スタッフに割り当てられたタスクをリアルタイム購読するストア。
@@ -2598,18 +2652,6 @@ Map<String, List<HistoryEntry>> taskLinkedReportsFrom(List<HistoryEntry> entries
     map.putIfAbsent(taskId, () => []).add(e);
   }
   return map;
-}
-
-/// sourceTaskIdが紐づいた「タスク完了」報告から、完了済みタスクIDの集合を求める。
-/// 「問い合わせ」(業務相談カテゴリ)もsourceTaskIdを持つが、これはタスクの完了を
-/// 意味しないため、category=='タスク完了'に限定して判定する。ホーム画面の未完了件数
-/// (_HomeTabBody)とタスク一覧(AssignedTasksScreen)の両方で使う共通ロジック。
-Set<String> completedTaskIdsFrom(List<HistoryEntry> entries) {
-  final grouped = taskLinkedReportsFrom(entries);
-  return grouped.entries
-      .where((e) => e.value.any((r) => r.category == 'タスク完了'))
-      .map((e) => e.key)
-      .toSet();
 }
 
 /// 指定スタッフの、指定カテゴリ(前方一致)の今月の件数を数える。
@@ -4852,9 +4894,8 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
         ? 1
         : breakdown.map((e) => e.count).reduce((a, b) => a > b ? a : b);
 
-    final completedTaskIds = completedTaskIdsFrom(staffEntries);
     final incompleteTaskCount = AssignedTaskStore.instance.entries
-        .where((t) => !completedTaskIds.contains(t.id))
+        .where((t) => !isTaskDoneForToday(t, staffEntries))
         .length;
     final pendingApprovalCount = staffEntries.where((e) => e.reviewedAt == null).length;
 
@@ -5731,6 +5772,13 @@ class _AssignTaskScreenState extends State<AssignTaskScreen> {
   bool _saveFailed = false;
   String? _validationError;
 
+  TaskRecurrence _recurrence = TaskRecurrence.once;
+  final Set<int> _selectedWeekdays = {};
+  DateTime? _rangeStart;
+  DateTime? _rangeEnd;
+
+  static const List<String> _weekdayLabels = ['月', '火', '水', '木', '金', '土', '日'];
+
   @override
   void initState() {
     super.initState();
@@ -5760,6 +5808,15 @@ class _AssignTaskScreenState extends State<AssignTaskScreen> {
       setState(() => _validationError = '送信先スタッフとタイトルは必須です。');
       return;
     }
+    if (_recurrence == TaskRecurrence.weekly && _selectedWeekdays.isEmpty) {
+      setState(() => _validationError = '対象曜日を1つ以上選択してください。');
+      return;
+    }
+    if (_recurrence == TaskRecurrence.dateRange &&
+        (_rangeStart == null || _rangeEnd == null)) {
+      setState(() => _validationError = '期間(開始日・終了日)を選択してください。');
+      return;
+    }
 
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
@@ -5780,6 +5837,13 @@ class _AssignTaskScreenState extends State<AssignTaskScreen> {
           'title': title,
           'detail': detail,
           'createdAt': FieldValue.serverTimestamp(),
+          'recurrence': _recurrence.name,
+          if (_recurrence == TaskRecurrence.weekly)
+            'weekdays': _selectedWeekdays.toList(),
+          if (_recurrence == TaskRecurrence.dateRange)
+            'startDate': Timestamp.fromDate(_rangeStart!),
+          if (_recurrence == TaskRecurrence.dateRange)
+            'endDate': Timestamp.fromDate(_rangeEnd!),
         });
       }
       await batch.commit().timeout(const Duration(seconds: 10));
@@ -5802,6 +5866,39 @@ class _AssignTaskScreenState extends State<AssignTaskScreen> {
         _saveFailed = true;
       });
     }
+  }
+
+  String _formatDate(DateTime d) =>
+      '${d.year}/${d.month.toString().padLeft(2, '0')}/${d.day.toString().padLeft(2, '0')}';
+
+  Future<void> _pickRangeDate({required bool isStart}) async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: (isStart ? _rangeStart : _rangeEnd) ??
+          (isStart ? now : (_rangeStart ?? now)),
+      firstDate: isStart ? now : (_rangeStart ?? now),
+      lastDate: now.add(const Duration(days: 365)),
+      builder: (context, child) => Theme(
+        data: ThemeData.dark().copyWith(
+          colorScheme: const ColorScheme.dark(primary: Colors.cyanAccent),
+        ),
+        child: child!,
+      ),
+    );
+    if (picked == null) return;
+    setState(() {
+      if (isStart) {
+        _rangeStart = picked;
+        // 終了日が開始日より前になってしまう場合はリセットする。
+        if (_rangeEnd != null && _rangeEnd!.isBefore(picked)) {
+          _rangeEnd = null;
+        }
+      } else {
+        _rangeEnd = picked;
+      }
+      _validationError = null;
+    });
   }
 
   @override
@@ -5911,6 +6008,107 @@ class _AssignTaskScreenState extends State<AssignTaskScreen> {
                   ),
                 ),
               ),
+              const SizedBox(height: 20),
+              const Text('繰り返し',
+                  style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  for (final r in TaskRecurrence.values) ...[
+                    if (r != TaskRecurrence.values.first) const SizedBox(width: 8),
+                    Expanded(
+                      child: _SummaryTabChip(
+                        label: switch (r) {
+                          TaskRecurrence.once => '一度きり',
+                          TaskRecurrence.daily => '毎日',
+                          TaskRecurrence.weekly => '毎週',
+                          TaskRecurrence.dateRange => '期間指定',
+                        },
+                        selected: r == _recurrence,
+                        onTap: _isSaving
+                            ? () {}
+                            : () => setState(() {
+                                  _recurrence = r;
+                                  _validationError = null;
+                                }),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+              if (_recurrence == TaskRecurrence.weekly) ...[
+                const SizedBox(height: 12),
+                const Text('対象曜日',
+                    style:
+                        TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (var i = 0; i < _weekdayLabels.length; i++)
+                      SizedBox(
+                        width: 60,
+                        child: _SummaryTabChip(
+                          label: _weekdayLabels[i],
+                          selected: _selectedWeekdays.contains(i + 1),
+                          onTap: _isSaving
+                              ? () {}
+                              : () => setState(() {
+                                    final weekday = i + 1;
+                                    if (_selectedWeekdays.contains(weekday)) {
+                                      _selectedWeekdays.remove(weekday);
+                                    } else {
+                                      _selectedWeekdays.add(weekday);
+                                    }
+                                    _validationError = null;
+                                  }),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+              if (_recurrence == TaskRecurrence.dateRange) ...[
+                const SizedBox(height: 12),
+                const Text('期間',
+                    style:
+                        TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: _isSaving ? null : () => _pickRangeDate(isStart: true),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          side: const BorderSide(color: Colors.white24),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape:
+                              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        child: Text(_rangeStart == null
+                            ? '開始日を選択'
+                            : '開始: ${_formatDate(_rangeStart!)}'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: _isSaving ? null : () => _pickRangeDate(isStart: false),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          side: const BorderSide(color: Colors.white24),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape:
+                              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        child: Text(
+                            _rangeEnd == null ? '終了日を選択' : '終了: ${_formatDate(_rangeEnd!)}'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
               if (_validationError != null) ...[
                 const SizedBox(height: 12),
                 Text(_validationError!,
@@ -6221,11 +6419,10 @@ class _AssignedTasksScreenState extends State<AssignedTasksScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // ホーム画面の未完了件数と同じロジック(sourceTaskIdが紐づいた完了報告の集合)。
+    // ホーム画面の未完了件数と同じ共通関数(繰り返し設定を考慮)。
     // この一覧は未完了のみを表示する(完了履歴はSV側の報告受領機能で参照する想定)。
-    final completedTaskIds = completedTaskIdsFrom(HistoryStore.instance.entries);
     final tasks = AssignedTaskStore.instance.entries
-        .where((t) => !completedTaskIds.contains(t.id))
+        .where((t) => !isTaskDoneForToday(t, HistoryStore.instance.entries))
         .toList();
 
     return Scaffold(
@@ -7052,16 +7249,16 @@ class _SentTasksScreenState extends State<SentTasksScreen> {
       for (final s in StaffRosterStore.instance.staff) s.uid: s.displayName,
     };
 
-    bool isCompleted(String taskId) =>
-        linkedReports[taskId]?.any((r) => r.category == 'タスク完了') ?? false;
+    // 繰り返し設定を考慮した共通関数で判定する(taskId単位ではなくtask単位)。
+    bool isDone(AssignedTask t) => isTaskDoneForToday(t, SvReportStore.instance.entries);
 
     List<AssignedTask> filtered;
     switch (_selectedTab) {
       case _SentTaskTab.incomplete:
-        filtered = tasks.where((t) => !isCompleted(t.id)).toList();
+        filtered = tasks.where((t) => !isDone(t)).toList();
         break;
       case _SentTaskTab.completed:
-        filtered = tasks.where((t) => isCompleted(t.id)).toList();
+        filtered = tasks.where((t) => isDone(t)).toList();
         break;
       case _SentTaskTab.all:
         filtered = tasks;
@@ -7108,7 +7305,7 @@ class _SentTasksScreenState extends State<SentTasksScreen> {
                       itemBuilder: (context, index) {
                         final task = filtered[index];
                         final reports = linkedReports[task.id] ?? const [];
-                        final completed = reports.any((r) => r.category == 'タスク完了');
+                        final completed = isDone(task);
                         final hasInquiry = reports.any((r) => r.category == '業務相談');
                         return Padding(
                           padding: const EdgeInsets.only(bottom: 10),
