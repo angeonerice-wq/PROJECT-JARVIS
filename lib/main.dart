@@ -1013,23 +1013,17 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         StatItem(
-                            icon: Icons.people,
-                            color: Colors.blueAccent,
-                            label: '全体稼働',
-                            value: '-',
-                            onTap: null),
-                        StatItem(
                             icon: Icons.check_circle,
                             color: Colors.greenAccent,
                             label: '完了タスク',
                             value: '$completedTaskCount件',
-                            onTap: null),
+                            onTap: widget.onOpenHistoryTab),
                         StatItem(
                             icon: Icons.warning_amber,
                             color: Colors.amber,
-                            label: '未確認',
+                            label: 'SV確認待ち',
                             value: '$unreviewedCount件',
-                            onTap: null),
+                            onTap: widget.onOpenHistoryTab),
                         StatItem(
                             icon: Icons.error_outline,
                             color: Colors.redAccent,
