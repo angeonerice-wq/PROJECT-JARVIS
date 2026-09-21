@@ -4720,14 +4720,6 @@ class SummaryTabBody extends StatefulWidget {
 
 class _SummaryTabBodyState extends State<SummaryTabBody> {
   late SummaryReportTab _selectedTab = widget.initialTab ?? SummaryReportTab.all;
-  static const List<_CategoryCount> _dummyBreakdown = [
-    _CategoryCount('勤怠', 5, Color(0xFF3B82F6)),
-    _CategoryCount('業務報告', 12, Color(0xFF22C55E)),
-    _CategoryCount('業務相談', 3, Color(0xFFA855F7)),
-    _CategoryCount('タスク完了', 8, Color(0xFFF97316)),
-    _CategoryCount('その他', 1, Color(0xFF64748B)),
-    _CategoryCount('周知確認', 6, Color(0xFF06B6D4)),
-  ];
 
   @override
   void initState() {
@@ -4849,13 +4841,17 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
     final staffNames = {
       for (final s in StaffRosterStore.instance.staff) s.uid: s.displayName,
     };
-    final breakdown = isSv ? _realBreakdown(svEntries) : _dummyBreakdown;
+    // スタッフ向け指標(SV向けとは対象データ・意味が異なる独立した算出)。
+    final staffEntries = HistoryStore.instance.entries;
+    final breakdown = isSv
+        ? _realBreakdown(svEntries)
+        : _realBreakdown(staffEntries
+            .where((e) => !e.timestamp.isBefore(_startOfWeek(DateTime.now())))
+            .toList());
     final maxCount = breakdown.isEmpty
         ? 1
         : breakdown.map((e) => e.count).reduce((a, b) => a > b ? a : b);
 
-    // スタッフ向け指標(SV向けとは対象データ・意味が異なる独立した算出)。
-    final staffEntries = HistoryStore.instance.entries;
     final completedTaskIds = completedTaskIdsFrom(staffEntries);
     final incompleteTaskCount = AssignedTaskStore.instance.entries
         .where((t) => !completedTaskIds.contains(t.id))
