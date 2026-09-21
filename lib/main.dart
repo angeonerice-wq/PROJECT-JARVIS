@@ -4737,6 +4737,7 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
     HistoryStore.instance.addListener(_onChanged);
     AssignedTaskStore.instance.addListener(_onChanged);
     SentAnnouncementStore.instance.addListener(_onChanged);
+    StaffRosterStore.instance.addListener(_onChanged);
   }
 
   @override
@@ -4746,6 +4747,7 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
     HistoryStore.instance.removeListener(_onChanged);
     AssignedTaskStore.instance.removeListener(_onChanged);
     SentAnnouncementStore.instance.removeListener(_onChanged);
+    StaffRosterStore.instance.removeListener(_onChanged);
     super.dispose();
   }
 
@@ -4838,6 +4840,14 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
     // 一覧・詳細画面に注記するためのルックアップ。新規クエリは不要。
     final announcementTitleById = {
       for (final a in SentAnnouncementStore.instance.entries) a.id: a.title,
+    };
+    // 「未確認のお知らせ」セクション用。1宛先=1ドキュメントの設計のため、
+    // 未確認のドキュメントそのものが「誰が確認していないか」を表す。
+    final unconfirmedAnnouncements =
+        SentAnnouncementStore.instance.entries.where((a) => !a.isConfirmed).toList();
+    final announcementLinkedReports = announcementLinkedReportsFrom(svEntries);
+    final staffNames = {
+      for (final s in StaffRosterStore.instance.staff) s.uid: s.displayName,
     };
     final breakdown = isSv ? _realBreakdown(svEntries) : _dummyBreakdown;
     final maxCount = breakdown.isEmpty
@@ -5002,6 +5012,103 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
             ),
           ),
           if (isSv) ...[
+            if (_selectedTab == SummaryReportTab.unreviewed &&
+                unconfirmedAnnouncements.isNotEmpty) ...[
+              const SizedBox(height: 24),
+              const Text('未確認のお知らせ',
+                  style:
+                      TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (final a in unconfirmedAnnouncements) ...[
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Material(
+                        color: Colors.transparent,
+                        borderRadius: BorderRadius.circular(16),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(16),
+                          onTap: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => SentAnnouncementDetailScreen(
+                                  announcement: a,
+                                  linkedReports: announcementLinkedReports[a.id] ?? const [],
+                                  staffName: staffNames[a.staffId],
+                                ),
+                              ),
+                            );
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF141826),
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(color: Colors.white10),
+                            ),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const CircleAvatar(
+                                  radius: 20,
+                                  backgroundColor: Color(0x3306B6D4),
+                                  child: Icon(Icons.campaign_outlined,
+                                      color: Colors.white, size: 18),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              '宛先: ${staffNames[a.staffId] ?? shortStaffId(a.staffId)}',
+                                              style: const TextStyle(
+                                                  color: Color(0xFF06B6D4),
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.bold),
+                                            ),
+                                          ),
+                                          Text(a.time,
+                                              style: TextStyle(
+                                                  color: Colors.grey[500], fontSize: 11)),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(a.title,
+                                          style: const TextStyle(
+                                              color: Colors.white, fontSize: 13.5, height: 1.3)),
+                                      const SizedBox(height: 8),
+                                      Wrap(
+                                        spacing: 6,
+                                        runSpacing: 6,
+                                        children: [
+                                          _AnnouncementStatusChip(isConfirmed: a.isConfirmed),
+                                          if ((announcementLinkedReports[a.id] ?? const [])
+                                              .any((r) => r.category == '業務相談'))
+                                            const _InquiryChip(),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const Icon(Icons.chevron_right,
+                                    color: Colors.white24, size: 18),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ],
             const SizedBox(height: 24),
             const Text('全スタッフの報告一覧',
                 style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
