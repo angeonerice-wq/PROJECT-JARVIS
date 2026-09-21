@@ -2410,10 +2410,33 @@ bool hasTaskCompletionRecord(AssignedTask task, List<HistoryEntry> entries) {
 /// 「今すぐ対応が必要か」を判定する共通関数。ホーム通知・スタッフのタスク一覧など、
 /// 対応が必要なものだけを出したい場面で使う。今日が対象日でないタスク(例:今日が
 /// 対象曜日に含まれない毎週タスク)は、対応不要として除外する。
-/// 完了状況そのもの(完了済み/未完了)を表示する場面ではisTaskDoneForTodayではなく
+/// 完了状況そのもの(完了済み/未完了)を表示する場面ではneedsTaskActionTodayではなく
 /// hasTaskCompletionRecordを使うこと(「対象日でない」と「完了済み」は別概念のため)。
 bool needsTaskActionToday(AssignedTask task, List<HistoryEntry> entries) =>
     isTaskScheduledToday(task) && !hasTaskCompletionRecord(task, entries);
+
+/// AssignTaskScreenの曜日選択UIと共通で使う、月曜始まりの曜日ラベル
+/// (DateTime.weekday準拠、インデックス0=月曜〜6=日曜)。
+const List<String> kWeekdayLabels = ['月', '火', '水', '木', '金', '土', '日'];
+
+/// タスク一覧・詳細画面に表示する、繰り返し設定の説明文。
+String recurrenceLabel(AssignedTask task) {
+  switch (task.recurrence) {
+    case TaskRecurrence.once:
+      return '一度きり';
+    case TaskRecurrence.daily:
+      return '毎日';
+    case TaskRecurrence.weekly:
+      final sorted = [...task.weekdays]..sort();
+      final days = sorted.map((w) => kWeekdayLabels[w - 1]).join('・');
+      return days.isEmpty ? '毎週' : '毎週($days)';
+    case TaskRecurrence.dateRange:
+      String fmt(DateTime d) =>
+          '${d.year}/${d.month.toString().padLeft(2, '0')}/${d.day.toString().padLeft(2, '0')}';
+      if (task.startDate == null || task.endDate == null) return '期間指定';
+      return '期間指定(${fmt(task.startDate!)}〜${fmt(task.endDate!)})';
+  }
+}
 
 /// ログイン中スタッフに割り当てられたタスクをリアルタイム購読するストア。
 /// `HistoryStore`と同型のパターン(authStateChanges()を直接見て、staffId一致で
@@ -5781,8 +5804,6 @@ class _AssignTaskScreenState extends State<AssignTaskScreen> {
   DateTime? _rangeStart;
   DateTime? _rangeEnd;
 
-  static const List<String> _weekdayLabels = ['月', '火', '水', '木', '金', '土', '日'];
-
   @override
   void initState() {
     super.initState();
@@ -6050,11 +6071,11 @@ class _AssignTaskScreenState extends State<AssignTaskScreen> {
                   spacing: 8,
                   runSpacing: 8,
                   children: [
-                    for (var i = 0; i < _weekdayLabels.length; i++)
+                    for (var i = 0; i < kWeekdayLabels.length; i++)
                       SizedBox(
                         width: 60,
                         child: _SummaryTabChip(
-                          label: _weekdayLabels[i],
+                          label: kWeekdayLabels[i],
                           selected: _selectedWeekdays.contains(i + 1),
                           onTap: _isSaving
                               ? () {}
@@ -6505,6 +6526,10 @@ class _AssignedTasksScreenState extends State<AssignedTasksScreen> {
                                         '依頼者: ${task.assignedByName ?? shortStaffId(task.assignedBy)}',
                                         style: TextStyle(
                                             color: Colors.grey[600], fontSize: 11)),
+                                    const SizedBox(height: 2),
+                                    Text('繰り返し: ${recurrenceLabel(task)}',
+                                        style: TextStyle(
+                                            color: Colors.grey[600], fontSize: 11)),
                                   ],
                                 ),
                               ),
@@ -6575,6 +6600,9 @@ class AssignedTaskDetailScreen extends StatelessWidget {
                         style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
                     const SizedBox(height: 4),
                     Text('受け取り: ${task.time}',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
+                    const SizedBox(height: 4),
+                    Text('繰り返し: ${recurrenceLabel(task)}',
                         style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
                   ],
                 ),
@@ -7376,12 +7404,18 @@ class _SentTasksScreenState extends State<SentTasksScreen> {
                                                   color: Colors.white,
                                                   fontSize: 13.5,
                                                   height: 1.3)),
+                                          const SizedBox(height: 4),
+                                          Text('繰り返し: ${recurrenceLabel(task)}',
+                                              style: TextStyle(
+                                                  color: Colors.grey[500], fontSize: 11)),
                                           const SizedBox(height: 8),
                                           Wrap(
                                             spacing: 6,
                                             runSpacing: 6,
                                             children: [
                                               _SentTaskStatusChip(isCompleted: completed),
+                                              if (!completed && !isTaskScheduledToday(task))
+                                                const _TaskNotScheduledTodayChip(),
                                               if (hasInquiry) const _InquiryChip(),
                                             ],
                                           ),
@@ -7459,6 +7493,34 @@ class _InquiryChip extends StatelessWidget {
   }
 }
 
+/// 繰り返しタスクで、今日が対象日(曜日/期間)ではないことを示すチップ。
+/// 「未完了」表示(=完了報告の実績なし)と併用し、対応が必要な未完了と、
+/// 単に今日は対象外なだけの未完了を見分けられるようにする。
+class _TaskNotScheduledTodayChip extends StatelessWidget {
+  const _TaskNotScheduledTodayChip();
+
+  @override
+  Widget build(BuildContext context) {
+    final color = Colors.grey[500]!;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.6)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.event_busy, size: 12, color: color),
+          const SizedBox(width: 4),
+          Text('本日対象外', style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.bold)),
+        ],
+      ),
+    );
+  }
+}
+
 class SentTaskDetailScreen extends StatelessWidget {
   final AssignedTask task;
   final List<HistoryEntry> linkedReports;
@@ -7473,7 +7535,10 @@ class SentTaskDetailScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final completed = linkedReports.any((r) => r.category == 'タスク完了');
+    // 繰り返しタスクは「今日分の完了報告があるか」で判定する(全期間の実績ではない)。
+    // hasTaskCompletionRecordと同じ判定ロジックをlinkedReports(既に絞り込み済み)に適用。
+    final completed = hasTaskCompletionRecord(task, linkedReports);
+    final scheduledToday = isTaskScheduledToday(task);
 
     return Scaffold(
       backgroundColor: const Color(0xFF0A0E1A),
@@ -7523,12 +7588,17 @@ class SentTaskDetailScreen extends StatelessWidget {
                     const SizedBox(height: 4),
                     Text('送信: ${task.time}',
                         style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
+                    const SizedBox(height: 4),
+                    Text('繰り返し: ${recurrenceLabel(task)}',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
                     const SizedBox(height: 12),
                     Wrap(
                       spacing: 6,
                       runSpacing: 6,
                       children: [
                         _SentTaskStatusChip(isCompleted: completed),
+                        if (!completed && !scheduledToday)
+                          const _TaskNotScheduledTodayChip(),
                         if (linkedReports.any((r) => r.category == '業務相談'))
                           const _InquiryChip(),
                       ],
@@ -8347,7 +8417,8 @@ class _StaffTaskRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final completed = linkedReports.any((r) => r.category == 'タスク完了');
+    // 繰り返しタスクは「今日分の完了報告があるか」で判定する(全期間の実績ではない)。
+    final completed = hasTaskCompletionRecord(task, linkedReports);
     final hasInquiry = linkedReports.any((r) => r.category == '業務相談');
     return Material(
       color: Colors.transparent,
@@ -8375,6 +8446,9 @@ class _StaffTaskRow extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(task.title, style: const TextStyle(color: Colors.white, fontSize: 13)),
+                  const SizedBox(height: 2),
+                  Text('繰り返し: ${recurrenceLabel(task)}',
+                      style: TextStyle(color: Colors.grey[600], fontSize: 10.5)),
                   const SizedBox(height: 6),
                   Wrap(
                     spacing: 6,

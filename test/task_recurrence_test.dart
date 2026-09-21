@@ -107,6 +107,36 @@ void main() {
     });
   });
 
+  group('recurrenceLabel', () {
+    test('once', () {
+      expect(recurrenceLabel(_task(recurrence: TaskRecurrence.once)), '一度きり');
+    });
+
+    test('daily', () {
+      expect(recurrenceLabel(_task(recurrence: TaskRecurrence.daily)), '毎日');
+    });
+
+    test('weekly: 火・金(選択順に関わらず曜日順に整列される)', () {
+      // 金(5)→火(2)の順で選択しても、表示は曜日順(火・金)になることを確認する。
+      final task = _task(recurrence: TaskRecurrence.weekly, weekdays: [5, 2]);
+      expect(recurrenceLabel(task), '毎週(火・金)');
+    });
+
+    test('weekly: 単一曜日', () {
+      final task = _task(recurrence: TaskRecurrence.weekly, weekdays: [1]);
+      expect(recurrenceLabel(task), '毎週(月)');
+    });
+
+    test('dateRange', () {
+      final task = _task(
+        recurrence: TaskRecurrence.dateRange,
+        startDate: DateTime(2026, 9, 22),
+        endDate: DateTime(2026, 9, 30),
+      );
+      expect(recurrenceLabel(task), '期間指定(2026/09/22〜2026/09/30)');
+    });
+  });
+
   group('dateRange', () {
     test('今日が期間内、完了報告なし → 要対応', () {
       final task = _task(
