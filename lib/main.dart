@@ -9021,8 +9021,14 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
     // スタッフがSVの判定を見た(=この画面を開いた)タイミングで既読化する。
     // SVが再判定するたびにstaffAckAtはクリアされるため、ここで書き込むことで
     // 「ホーム画面のSVからの返信バッジ」が正しく消える。
-    if (UserSession.instance.role != UserRole.sv && widget.summary.reviewedAction != null) {
+    final role = UserSession.instance.role;
+    // TODO(debug): 既読化不具合の一時調査用ログ。原因特定後に削除する。
+    debugPrint('[ACK-DEBUG] initState: role=$role, reportId=${widget.summary.id}, '
+        'reviewedAction=${widget.summary.reviewedAction}');
+    if (role != UserRole.sv && widget.summary.reviewedAction != null) {
       _ackReview();
+    } else {
+      debugPrint('[ACK-DEBUG] skipped: role=$role, reviewedAction=${widget.summary.reviewedAction}');
     }
   }
 
@@ -9034,15 +9040,39 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
 
   Future<void> _ackReview() async {
     final reportId = widget.summary.id;
-    if (reportId == null) return;
+    // TODO(debug): 既読化不具合の一時調査用ログ・画面表示。原因特定後に削除する。
+    debugPrint('[ACK-DEBUG] _ackReview called: reportId=$reportId');
+    if (reportId == null) {
+      debugPrint('[ACK-DEBUG] aborted: reportId is null');
+      return;
+    }
     try {
       await FirebaseFirestore.instance
           .collection('reports')
           .doc(reportId)
           .update({'staffAckAt': FieldValue.serverTimestamp()})
           .timeout(const Duration(seconds: 10));
+      debugPrint('[ACK-DEBUG] staffAckAt write SUCCEEDED for $reportId');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('[調査用] 既読化 成功 (id: $reportId)'),
+            backgroundColor: const Color(0xFF166534),
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
     } catch (e) {
-      debugPrint('[SvSummaryScreen] staffAckAtの更新に失敗しました: $e');
+      debugPrint('[ACK-DEBUG] staffAckAt write FAILED for $reportId: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('[調査用] 既読化 失敗: $e'),
+            backgroundColor: const Color(0xFF7F1D1D),
+            duration: const Duration(seconds: 6),
+          ),
+        );
+      }
     }
   }
 
