@@ -769,8 +769,14 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
     // SVが判定(承認/再調整依頼/エスカレーション)した内容のうち、まだ本人が
     // 確認していないもの(staffAckAt未設定)。announcementsの未確認件数と同様、
     // 本日分に絞らず、未確認である限り日をまたいでも表示し続ける。
+    // コメントが無い判定(単なる承認のみ等)は通知対象に含めない(履歴タブで
+    // 状態を確認できれば十分なため、コメントが付いた「返信」のみを通知する)。
     final svReplyEntries = entries
-        .where((e) => e.reviewedAt != null && e.staffAckAt == null)
+        .where((e) =>
+            e.reviewedAt != null &&
+            e.staffAckAt == null &&
+            e.reviewComment != null &&
+            e.reviewComment!.trim().isNotEmpty)
         .toList();
     final svReplyCount = svReplyEntries.length;
 
@@ -2186,6 +2192,40 @@ class HistoryStore extends ChangeNotifier {
     }, onError: (Object e, StackTrace st) {
       debugPrint('[HistoryStore] snapshot error: $e');
     });
+  }
+
+  /// staffAckAtのFirestore書き込み成功直後、リアルタイムリスナーの反映を待たずに
+  /// ローカルの状態を楽観的に更新する。Safari等の環境でリスナーの再購読・反映に
+  /// 遅延が生じても、ホーム画面の「SVからの返信」件数が即座に更新されるようにする
+  /// ため。実際のサーバー値は後続のsnapshotイベントで上書きされる(内容は同じ値の
+  /// ため無害な冪等更新になる)。
+  void markAckedLocally(String reportId) {
+    final index = _entries.indexWhere((e) => e.id == reportId);
+    if (index == -1) return;
+    final e = _entries[index];
+    if (e.staffAckAt != null) return; // 既に既読なら何もしない
+    _entries[index] = HistoryEntry(
+      id: e.id,
+      staffId: e.staffId,
+      staffName: e.staffName,
+      category: e.category,
+      title: e.title,
+      timestamp: e.timestamp,
+      action: e.action,
+      fields: e.fields,
+      history: e.history,
+      approvedAt: e.approvedAt,
+      reviewedBy: e.reviewedBy,
+      reviewedAt: e.reviewedAt,
+      reviewedAction: e.reviewedAction,
+      sourceTaskId: e.sourceTaskId,
+      announcementId: e.announcementId,
+      sourceReportId: e.sourceReportId,
+      isManualBySv: e.isManualBySv,
+      reviewComment: e.reviewComment,
+      staffAckAt: DateTime.now(),
+    );
+    notifyListeners();
   }
 
   /// Firestoreの`reports`コレクションへ書き込む。staffIdはログイン中ユーザーから付与する。
@@ -4630,6 +4670,9 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
               // カード自体の背景・枠線も強調する(バッジだけだと目立たないため)。
               final isNeedsAction =
                   e.approvedAt == null && e.reviewedAction == SuggestedAction.needsReschedule;
+              final hasSvComment =
+                  e.reviewComment != null && e.reviewComment!.trim().isNotEmpty;
+              final isSvCommentUnread = hasSvComment && e.staffAckAt == null;
               return Material(
                 color: Colors.transparent,
                 borderRadius: BorderRadius.circular(16),
@@ -4733,18 +4776,31 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
                               ],
                               const SizedBox(height: 8),
                               _ReportStatusBadge(entry: e, isSv: isSv),
-                              if (!isSv &&
-                                  e.reviewComment != null &&
-                                  e.reviewComment!.trim().isNotEmpty) ...[
+                              if (!isSv && hasSvComment) ...[
                                 const SizedBox(height: 4),
                                 Row(
                                   children: [
-                                    Icon(Icons.chat_bubble_outline,
-                                        size: 11, color: Colors.grey[500]),
+                                    Icon(
+                                        isSvCommentUnread
+                                            ? Icons.mark_chat_unread
+                                            : Icons.chat_bubble_outline,
+                                        size: 11,
+                                        color: isSvCommentUnread
+                                            ? const Color(0xFF8B5CF6)
+                                            : Colors.grey[500]),
                                     const SizedBox(width: 4),
-                                    Text('SVからのコメントあり',
-                                        style:
-                                            TextStyle(color: Colors.grey[500], fontSize: 10.5)),
+                                    Text(
+                                        isSvCommentUnread
+                                            ? 'SVからの返信あり(未読)'
+                                            : 'SVからのコメント',
+                                        style: TextStyle(
+                                            color: isSvCommentUnread
+                                                ? const Color(0xFF8B5CF6)
+                                                : Colors.grey[500],
+                                            fontSize: 10.5,
+                                            fontWeight: isSvCommentUnread
+                                                ? FontWeight.bold
+                                                : FontWeight.normal)),
                                   ],
                                 ),
                               ],
@@ -9021,14 +9077,8 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
     // スタッフがSVの判定を見た(=この画面を開いた)タイミングで既読化する。
     // SVが再判定するたびにstaffAckAtはクリアされるため、ここで書き込むことで
     // 「ホーム画面のSVからの返信バッジ」が正しく消える。
-    final role = UserSession.instance.role;
-    // TODO(debug): 既読化不具合の一時調査用ログ。原因特定後に削除する。
-    debugPrint('[ACK-DEBUG] initState: role=$role, reportId=${widget.summary.id}, '
-        'reviewedAction=${widget.summary.reviewedAction}');
-    if (role != UserRole.sv && widget.summary.reviewedAction != null) {
+    if (UserSession.instance.role != UserRole.sv && widget.summary.reviewedAction != null) {
       _ackReview();
-    } else {
-      debugPrint('[ACK-DEBUG] skipped: role=$role, reviewedAction=${widget.summary.reviewedAction}');
     }
   }
 
@@ -9040,39 +9090,18 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
 
   Future<void> _ackReview() async {
     final reportId = widget.summary.id;
-    // TODO(debug): 既読化不具合の一時調査用ログ・画面表示。原因特定後に削除する。
-    debugPrint('[ACK-DEBUG] _ackReview called: reportId=$reportId');
-    if (reportId == null) {
-      debugPrint('[ACK-DEBUG] aborted: reportId is null');
-      return;
-    }
+    if (reportId == null) return;
     try {
       await FirebaseFirestore.instance
           .collection('reports')
           .doc(reportId)
           .update({'staffAckAt': FieldValue.serverTimestamp()})
           .timeout(const Duration(seconds: 10));
-      debugPrint('[ACK-DEBUG] staffAckAt write SUCCEEDED for $reportId');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('[調査用] 既読化 成功 (id: $reportId)'),
-            backgroundColor: const Color(0xFF166534),
-            duration: const Duration(seconds: 4),
-          ),
-        );
-      }
+      // サーバーの書き込みは成功しても、Safari等ではリアルタイムリスナーの
+      // 反映に遅延が生じる場合があるため、ローカル状態も即座に更新しておく。
+      HistoryStore.instance.markAckedLocally(reportId);
     } catch (e) {
-      debugPrint('[ACK-DEBUG] staffAckAt write FAILED for $reportId: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('[調査用] 既読化 失敗: $e'),
-            backgroundColor: const Color(0xFF7F1D1D),
-            duration: const Duration(seconds: 6),
-          ),
-        );
-      }
+      debugPrint('[SvSummaryScreen] staffAckAtの更新に失敗しました: $e');
     }
   }
 
