@@ -766,6 +766,14 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
         .toList();
     final needsActionCount = needsActionEntries.length;
 
+    // SVが判定(承認/再調整依頼/エスカレーション)した内容のうち、まだ本人が
+    // 確認していないもの(staffAckAt未設定)。announcementsの未確認件数と同様、
+    // 本日分に絞らず、未確認である限り日をまたいでも表示し続ける。
+    final svReplyEntries = entries
+        .where((e) => e.reviewedAt != null && e.staffAckAt == null)
+        .toList();
+    final svReplyCount = svReplyEntries.length;
+
     // 「SVからのタスク」の未完了件数。新規購読は追加せず、既に購読済みの
     // HistoryStore(自分が提出した報告。sourceTaskIdが紐づいた完了報告を含む)と
     // AssignedTaskStore(自分に割り当てられた全タスク)を突き合わせて都度算出する。
@@ -835,6 +843,41 @@ class _HomeTabBodyState extends State<_HomeTabBody> {
                       action: entry.action,
                       history: entry.history,
                       reviewedAction: entry.reviewedAction,
+                      reviewComment: entry.reviewComment,
+                    ),
+                  ),
+                ),
+              );
+            } else {
+              widget.onOpenHistoryTab?.call();
+            }
+          },
+        ),
+      if (svReplyCount > 0)
+        _HomeNoticeCard(
+          icon: Icons.reply,
+          iconColor: const Color(0xFF8B5CF6),
+          title: 'SVからの返信',
+          count: svReplyCount,
+          onTap: () {
+            // 1件だけなら該当報告の詳細に直接遷移し、複数件ある場合は
+            // どれを開くか選べるよう履歴タブを開く(スクロール等は行わない)。
+            if (svReplyEntries.length == 1) {
+              final entry = svReplyEntries.first;
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => SvSummaryScreen(
+                    summary: SvReportSummary(
+                      id: entry.id,
+                      category: entry.category,
+                      icon: entry.icon,
+                      color: entry.color,
+                      time: entry.time,
+                      fields: entry.fields,
+                      action: entry.action,
+                      history: entry.history,
+                      reviewedAction: entry.reviewedAction,
+                      reviewComment: entry.reviewComment,
                     ),
                   ),
                 ),
@@ -1904,6 +1947,12 @@ class HistoryEntry {
   /// SVが「⑤稼働確認」から配下スタッフの勤怠ステータスを手動変更した場合にtrue。
   /// 本人による自己申告(チャット経由)との区別に使う。
   final bool isManualBySv;
+  /// SVが判定(承認のみ/再調整依頼/エスカレーション)と同時に残せる任意コメント。
+  final String? reviewComment;
+  /// スタッフがSVの判定(reviewedAction/reviewComment)を確認済みかどうか。
+  /// SVが判定し直すたびにnullへ戻す(=再度「未確認」扱いにする)ことで、
+  /// ホーム画面の「SVからの返信」通知バーの既読管理に使う。
+  final DateTime? staffAckAt;
 
   HistoryEntry({
     this.id,
@@ -1923,6 +1972,8 @@ class HistoryEntry {
     this.announcementId,
     this.sourceReportId,
     this.isManualBySv = false,
+    this.reviewComment,
+    this.staffAckAt,
   }) : timestamp = timestamp ?? DateTime.now();
 
   IconData get icon => categoryStyle(category).icon;
@@ -1970,6 +2021,8 @@ class HistoryEntry {
       announcementId: data['announcementId'] as String?,
       sourceReportId: data['sourceReportId'] as String?,
       isManualBySv: data['isManualBySv'] as bool? ?? false,
+      reviewComment: data['reviewComment'] as String?,
+      staffAckAt: (data['staffAckAt'] as Timestamp?)?.toDate(),
       action: SuggestedAction.values.firstWhere(
         (a) => a.name == data['action'],
         orElse: () => SuggestedAction.approveOnly,
@@ -4596,6 +4649,7 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
                             action: e.action,
                             history: e.history,
                             reviewedAction: e.reviewedAction,
+                            reviewComment: e.reviewComment,
                             sourceReportCategory: e.sourceReportId != null
                                 ? reportCategoryById[e.sourceReportId]
                                 : null,
@@ -4679,6 +4733,21 @@ class _HistoryTabBodyState extends State<HistoryTabBody> {
                               ],
                               const SizedBox(height: 8),
                               _ReportStatusBadge(entry: e, isSv: isSv),
+                              if (!isSv &&
+                                  e.reviewComment != null &&
+                                  e.reviewComment!.trim().isNotEmpty) ...[
+                                const SizedBox(height: 4),
+                                Row(
+                                  children: [
+                                    Icon(Icons.chat_bubble_outline,
+                                        size: 11, color: Colors.grey[500]),
+                                    const SizedBox(width: 4),
+                                    Text('SVからのコメントあり',
+                                        style:
+                                            TextStyle(color: Colors.grey[500], fontSize: 10.5)),
+                                  ],
+                                ),
+                              ],
                             ],
                           ),
                         ),
@@ -5307,6 +5376,7 @@ class _SummaryTabBodyState extends State<SummaryTabBody> {
                                 action: e.action,
                                 history: e.history,
                                 reviewedAction: e.reviewedAction,
+                                reviewComment: e.reviewComment,
                                 sourceReportCategory: e.sourceReportId != null
                                     ? reportCategoryById[e.sourceReportId]
                                     : null,
@@ -5916,6 +5986,7 @@ class _CompletedTasksScreenState extends State<CompletedTasksScreen> {
                                   action: e.action,
                                   history: e.history,
                                   reviewedAction: e.reviewedAction,
+                                  reviewComment: e.reviewComment,
                                 ),
                               ),
                             ),
@@ -8561,6 +8632,7 @@ class _StaffHistoryRow extends StatelessWidget {
                   action: entry.action,
                   history: entry.history,
                   reviewedAction: entry.reviewedAction,
+                  reviewComment: entry.reviewComment,
                   sourceReportCategory: sourceReportCategory,
                   sourceAnnouncementTitle: sourceAnnouncementTitle,
                 ),
@@ -8908,6 +8980,7 @@ class SvReportSummary {
   final SuggestedAction action;
   final List<ChatMessage> history;
   final SuggestedAction? reviewedAction;
+  final String? reviewComment;
   final String? sourceReportCategory;
   final String? sourceAnnouncementTitle;
 
@@ -8921,6 +8994,7 @@ class SvReportSummary {
     required this.action,
     required this.history,
     this.reviewedAction,
+    this.reviewComment,
     this.sourceReportCategory,
     this.sourceAnnouncementTitle,
   });
@@ -8938,6 +9012,39 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
   bool _showHistory = false;
   SuggestedAction? _decision;
   bool _isSubmitting = false;
+  late final TextEditingController _commentController;
+
+  @override
+  void initState() {
+    super.initState();
+    _commentController = TextEditingController(text: widget.summary.reviewComment ?? '');
+    // スタッフがSVの判定を見た(=この画面を開いた)タイミングで既読化する。
+    // SVが再判定するたびにstaffAckAtはクリアされるため、ここで書き込むことで
+    // 「ホーム画面のSVからの返信バッジ」が正しく消える。
+    if (UserSession.instance.role != UserRole.sv && widget.summary.reviewedAction != null) {
+      _ackReview();
+    }
+  }
+
+  @override
+  void dispose() {
+    _commentController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _ackReview() async {
+    final reportId = widget.summary.id;
+    if (reportId == null) return;
+    try {
+      await FirebaseFirestore.instance
+          .collection('reports')
+          .doc(reportId)
+          .update({'staffAckAt': FieldValue.serverTimestamp()})
+          .timeout(const Duration(seconds: 10));
+    } catch (e) {
+      debugPrint('[SvSummaryScreen] staffAckAtの更新に失敗しました: $e');
+    }
+  }
 
   Future<void> _decide(SuggestedAction action, String message) async {
     if (_isSubmitting) return; // 二重送信防止
@@ -8947,12 +9054,16 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
     final reportId = widget.summary.id;
     final uid = FirebaseAuth.instance.currentUser?.uid;
     var success = false;
+    final comment = _commentController.text.trim();
 
     if (reportId != null && uid != null) {
       final update = <String, dynamic>{
         'reviewedBy': uid,
         'reviewedAt': FieldValue.serverTimestamp(),
         'reviewedAction': action.name,
+        // 新しい判定のたびに「未確認」へ戻し、ホーム画面の通知バーに再度出るようにする。
+        'staffAckAt': FieldValue.delete(),
+        'reviewComment': comment.isEmpty ? FieldValue.delete() : comment,
       };
       if (action == SuggestedAction.approveOnly) {
         update['approvedAt'] = FieldValue.serverTimestamp();
@@ -9138,6 +9249,45 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
                   ],
                 ),
               ),
+              if (!isSv && s.reviewedAction != null) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: s.reviewedAction!.color.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: s.reviewedAction!.color.withValues(alpha: 0.5)),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.reply, color: s.reviewedAction!.color, size: 22),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('SVからの返信',
+                                style: TextStyle(color: Colors.grey[400], fontSize: 11.5)),
+                            const SizedBox(height: 2),
+                            Text(s.reviewedAction!.label,
+                                style: TextStyle(
+                                    color: s.reviewedAction!.color,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 15)),
+                            if (s.reviewComment != null && s.reviewComment!.trim().isNotEmpty) ...[
+                              const SizedBox(height: 8),
+                              Text(s.reviewComment!,
+                                  style: const TextStyle(
+                                      color: Colors.white70, fontSize: 13, height: 1.4)),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               if (!isSv && s.reviewedAction == SuggestedAction.needsReschedule) ...[
                 const SizedBox(height: 12),
                 SizedBox(
@@ -9239,42 +9389,76 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
           : SafeArea(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-                child: Row(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Expanded(
-                      child: _SvActionButton(
-                        label: '承認する',
-                        icon: Icons.check_circle,
-                        color: const Color(0xFF22C55E),
-                        selected: effectiveAction == SuggestedAction.approveOnly,
-                        onTap: _isSubmitting
-                            ? null
-                            : () => _decide(SuggestedAction.approveOnly, '承認しました'),
+                    TextField(
+                      controller: _commentController,
+                      enabled: !_isSubmitting,
+                      maxLines: 2,
+                      minLines: 1,
+                      style: const TextStyle(color: Colors.white, fontSize: 13.5),
+                      decoration: InputDecoration(
+                        hintText: 'コメント(任意)',
+                        hintStyle: TextStyle(color: Colors.grey[600], fontSize: 13.5),
+                        filled: true,
+                        fillColor: const Color(0xFF141826),
+                        contentPadding:
+                            const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: const BorderSide(color: Colors.white10),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: const BorderSide(color: Colors.white10),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: const BorderSide(color: Colors.cyanAccent),
+                        ),
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: _SvActionButton(
-                        label: '再調整依頼',
-                        icon: Icons.sync_problem,
-                        color: const Color(0xFFF59E0B),
-                        selected: effectiveAction == SuggestedAction.needsReschedule,
-                        onTap: _isSubmitting
-                            ? null
-                            : () => _decide(SuggestedAction.needsReschedule, '再調整を依頼しました'),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: _SvActionButton(
-                        label: 'エスカレーション',
-                        icon: Icons.priority_high,
-                        color: const Color(0xFFEF4444),
-                        selected: effectiveAction == SuggestedAction.escalate,
-                        onTap: _isSubmitting
-                            ? null
-                            : () => _decide(SuggestedAction.escalate, 'エスカレーションしました'),
-                      ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _SvActionButton(
+                            label: '承認する',
+                            icon: Icons.check_circle,
+                            color: const Color(0xFF22C55E),
+                            selected: effectiveAction == SuggestedAction.approveOnly,
+                            onTap: _isSubmitting
+                                ? null
+                                : () => _decide(SuggestedAction.approveOnly, '承認しました'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: _SvActionButton(
+                            label: '再調整依頼',
+                            icon: Icons.sync_problem,
+                            color: const Color(0xFFF59E0B),
+                            selected: effectiveAction == SuggestedAction.needsReschedule,
+                            onTap: _isSubmitting
+                                ? null
+                                : () =>
+                                    _decide(SuggestedAction.needsReschedule, '再調整を依頼しました'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: _SvActionButton(
+                            label: 'エスカレーション',
+                            icon: Icons.priority_high,
+                            color: const Color(0xFFEF4444),
+                            selected: effectiveAction == SuggestedAction.escalate,
+                            onTap: _isSubmitting
+                                ? null
+                                : () => _decide(SuggestedAction.escalate, 'エスカレーションしました'),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
