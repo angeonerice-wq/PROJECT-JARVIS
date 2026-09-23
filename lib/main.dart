@@ -9219,36 +9219,37 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
               ),
               const SizedBox(height: 16),
 
-              // AIおすすめアクション
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: s.action.color.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: s.action.color.withValues(alpha: 0.5)),
-                ),
-                child: Row(
-                  children: [
-                    Icon(s.action.icon, color: s.action.color, size: 22),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text('AIおすすめアクション',
-                              style: TextStyle(color: Colors.grey[400], fontSize: 11.5)),
-                          const SizedBox(height: 2),
-                          Text(s.action.label,
-                              style: TextStyle(
-                                  color: s.action.color,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 15)),
-                        ],
+              // AIおすすめアクション(SV向けの判断材料のため、スタッフ側には表示しない)
+              if (isSv)
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: s.action.color.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: s.action.color.withValues(alpha: 0.5)),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(s.action.icon, color: s.action.color, size: 22),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('AIおすすめアクション',
+                                style: TextStyle(color: Colors.grey[400], fontSize: 11.5)),
+                            const SizedBox(height: 2),
+                            Text(s.action.label,
+                                style: TextStyle(
+                                    color: s.action.color,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 15)),
+                          ],
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
               if (!isSv && s.reviewedAction != null) ...[
                 const SizedBox(height: 12),
                 Container(
