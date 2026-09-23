@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'firebase_options.dart';
@@ -192,16 +193,25 @@ class _LoginScreenState extends State<LoginScreen> {
           .get();
       if (_parseUserRole(profileDoc.data()?['role']) == null) {
         await FirebaseAuth.instance.signOut();
+        // 権限未設定=IDとして無効なアカウントなので、ブラウザに保存を促さない。
+        TextInput.finishAutofillContext(shouldSave: false);
         setState(() =>
             _errorMessage = 'アカウントの権限が設定されていません。管理者にお問い合わせください。');
         return;
       }
+
+      // ブラウザ(Chrome/Safari等)へ「今回の入力内容を保存してよい」と明示的に伝える。
+      // AutofillGroup/autofillHintsだけでは保存ダイアログは自動的に出ず、ログイン成功時に
+      // このAPIを呼んで初めてブラウザのパスワード保存機能が働く(Flutter Web特有の制約)。
+      TextInput.finishAutofillContext();
 
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const HomePage()),
       );
     } on FirebaseAuthException catch (e) {
+      // 認証失敗時は誤った入力内容を保存させないため、保存しない指示を送る。
+      TextInput.finishAutofillContext(shouldSave: false);
       setState(() {
         _errorMessage = switch (e.code) {
           'user-not-found' || 'invalid-credential' || 'wrong-password' =>
@@ -272,52 +282,72 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               const SizedBox(height: 44),
 
-              Text('メールアドレス', style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
-              const SizedBox(height: 6),
-              TextField(
-                controller: _emailController,
-                keyboardType: TextInputType.emailAddress,
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  hintText: '例:staff@example.com',
-                  hintStyle: TextStyle(color: Colors.grey[600]),
-                  prefixIcon: const Icon(Icons.mail_outline, color: Colors.white38, size: 20),
-                  filled: true,
-                  fillColor: const Color(0xFF141826),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 18),
-
-              Text('パスワード', style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
-              const SizedBox(height: 6),
-              TextField(
-                controller: _passwordController,
-                obscureText: _obscurePassword,
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  hintText: '••••••••',
-                  hintStyle: TextStyle(color: Colors.grey[600]),
-                  prefixIcon: const Icon(Icons.lock_outline, color: Colors.white38, size: 20),
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      _obscurePassword ? Icons.visibility_off : Icons.visibility,
-                      color: Colors.white38,
-                      size: 20,
+              // AutofillGroup + autofillHints で、ブラウザのパスワード管理機能に
+              // 「これはログインフォームである」と伝える。これだけでは保存ダイアログは
+              // 出ず、ログイン成功時にTextInput.finishAutofillContext()を呼んで初めて
+              // ブラウザに保存を促せる(_handleLogin参照)。
+              AutofillGroup(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text('メールアドレス',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: _emailController,
+                      keyboardType: TextInputType.emailAddress,
+                      textInputAction: TextInputAction.next,
+                      autofillHints: const [AutofillHints.username, AutofillHints.email],
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        hintText: '例:staff@example.com',
+                        hintStyle: TextStyle(color: Colors.grey[600]),
+                        prefixIcon:
+                            const Icon(Icons.mail_outline, color: Colors.white38, size: 20),
+                        filled: true,
+                        fillColor: const Color(0xFF141826),
+                        contentPadding:
+                            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
                     ),
-                    onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
-                  ),
-                  filled: true,
-                  fillColor: const Color(0xFF141826),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(14),
-                    borderSide: BorderSide.none,
-                  ),
+                    const SizedBox(height: 18),
+                    Text('パスワード', style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: _passwordController,
+                      obscureText: _obscurePassword,
+                      textInputAction: TextInputAction.done,
+                      autofillHints: const [AutofillHints.password],
+                      onSubmitted: _isLoading ? null : (_) => _handleLogin(),
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        hintText: '••••••••',
+                        hintStyle: TextStyle(color: Colors.grey[600]),
+                        prefixIcon:
+                            const Icon(Icons.lock_outline, color: Colors.white38, size: 20),
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            _obscurePassword ? Icons.visibility_off : Icons.visibility,
+                            color: Colors.white38,
+                            size: 20,
+                          ),
+                          onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                        ),
+                        filled: true,
+                        fillColor: const Color(0xFF141826),
+                        contentPadding:
+                            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(height: 10),
