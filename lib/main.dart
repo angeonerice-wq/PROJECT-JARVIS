@@ -3225,6 +3225,11 @@ class _AttendanceChatScreenState extends State<AttendanceChatScreen> {
         _pendingEntry = null;
       });
       _addJarvisMessage('ありがとうございます。内容を確認し、SVに共有しました。');
+      // スナックバーが見える程度の間を置いてから、ホーム画面まで自動で戻る
+      // (周知確認・タスク完了報告の成功時と同じパターン)。
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      if (!mounted) return;
+      Navigator.of(context).pop();
     } catch (_) {
       BeforeUnloadGuard.disable();
       if (!mounted) return;
@@ -3686,6 +3691,11 @@ class _WorkReportChatScreenState extends State<WorkReportChatScreen> {
         _pendingEntry = null;
       });
       _addJarvis('ありがとうございます。内容を確認し、SVに共有しました。');
+      // スナックバーが見える程度の間を置いてから、ホーム画面まで自動で戻る
+      // (周知確認・タスク完了報告の成功時と同じパターン)。
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      if (!mounted) return;
+      Navigator.of(context).pop();
     } catch (_) {
       BeforeUnloadGuard.disable();
       if (!mounted) return;
@@ -3951,16 +3961,19 @@ class _ConsultationChatScreenState extends State<ConsultationChatScreen> {
         _pendingEntry = null;
       });
       _addJarvis('ありがとうございます。内容を確認し、SVに共有しました。');
-      // タスク詳細画面の「問い合わせ」/SVの「対応する」から遷移してきた場合は、
-      // TaskQuickCompleteScreen(完了報告)と同じく、少し間を置いて一覧画面まで自動で戻る。
-      // 通常のホーム画面からの業務相談(どちらの紐づけもなし)は、このままチャット画面に
-      // 留まる既存の挙動を変えない。
+      // スナックバーが見える程度の間を置いてから自動で戻る(周知確認・タスク完了報告の
+      // 成功時と同じパターン)。タスク詳細画面の「問い合わせ」/SVの「対応する」から
+      // 遷移してきた場合は、間に挟まっている詳細画面も含めて2回popして一覧画面まで
+      // 戻る。通常のホーム画面から直接開いた業務相談(どちらの紐づけもなし)は
+      // 1回popしてホーム画面まで戻る。
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      if (!mounted) return;
       if (widget.sourceTaskId != null || widget.sourceReportId != null) {
-        await Future<void>.delayed(const Duration(milliseconds: 700));
-        if (!mounted) return;
         Navigator.of(context)
           ..pop()
           ..pop();
+      } else {
+        Navigator.of(context).pop();
       }
     } catch (_) {
       BeforeUnloadGuard.disable();
@@ -4293,6 +4306,11 @@ class _BusinessCompletionChatScreenState extends State<BusinessCompletionChatScr
         _pendingEntry = null;
       });
       _addJarvis('ありがとうございます。内容を確認し、SVに共有しました。');
+      // スナックバーが見える程度の間を置いてから、ホーム画面まで自動で戻る
+      // (周知確認・タスク完了報告の成功時と同じパターン)。
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      if (!mounted) return;
+      Navigator.of(context).pop();
     } catch (_) {
       BeforeUnloadGuard.disable();
       if (!mounted) return;
@@ -4578,6 +4596,11 @@ class _OtherChatScreenState extends State<OtherChatScreen> {
         _pendingEntry = null;
       });
       _addJarvis('ありがとうございます。内容を確認し、SVに共有しました。');
+      // スナックバーが見える程度の間を置いてから、ホーム画面まで自動で戻る
+      // (周知確認・タスク完了報告の成功時と同じパターン)。
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      if (!mounted) return;
+      Navigator.of(context).pop();
     } catch (_) {
       BeforeUnloadGuard.disable();
       if (!mounted) return;
