@@ -55,10 +55,28 @@ service cloud.firestore {
              .data.supervisorId == request.auth.uid;
     }
 
+    // SVが「送信したタスク」画面から配下スタッフのタスク完了を代理記録する場合の例外。
+    // 口頭で完了報告を受けたがJARVISへの入力を忘れている場合等を想定。
+    // isValidManualAttendance()と同じ悪用防止に加え、sourceTaskIdが実際に自分が
+    // 割り当てたタスク(assignedBy==自分)であることも確認する。
+    function isValidManualTaskCompletion() {
+      return isSv()
+        && request.resource.data.isManualBySv == true
+        && request.resource.data.supervisorId == request.auth.uid
+        && request.resource.data.category == 'タスク完了'
+        && request.resource.data.staffId is string
+        && get(/databases/$(database)/documents/users/$(request.resource.data.staffId))
+             .data.supervisorId == request.auth.uid
+        && request.resource.data.sourceTaskId is string
+        && get(/databases/$(database)/documents/tasks/$(request.resource.data.sourceTaskId))
+             .data.assignedBy == request.auth.uid;
+    }
+
     // スタッフが作成した業務報告・チャット履歴。
     // 本人はいつでも自分の報告を作成・閲覧できる。SVは全スタッフの報告を閲覧できるが、
     // 書き込みは原則(SVであっても)本人のstaffIdでの作成のみに限定する。
-    // 唯一の例外がisValidManualAttendance()(SVによる勤怠ステータスの手動変更)。
+    // 例外がisValidManualAttendance()(SVによる勤怠ステータスの手動変更)と
+    // isValidManualTaskCompletion()(SVによるタスク完了の代理記録)。
     match /reports/{reportId} {
       allow create: if request.auth != null
                     && request.resource.data.keys().hasAll(
@@ -68,7 +86,8 @@ service cloud.firestore {
                     && request.resource.data.title is string
                     && request.resource.data.timestamp is timestamp
                     && (request.resource.data.staffId == request.auth.uid
-                        || isValidManualAttendance());
+                        || isValidManualAttendance()
+                        || isValidManualTaskCompletion());
 
       // SVが読めるのは「自分のチーム(supervisorId==自分)」のreportsのみに限定する。
       // 本人が自分の報告を読める条件はこれまでと変更なし。
@@ -115,6 +134,10 @@ service cloud.firestore {
 
     // SVがスタッフへ配信するお知らせ。tasksと同じ形だが、完了/問い合わせの概念を
     // 持たない代わりに、宛先本人が自分でconfirmedAtを書き込める点がtasksと異なる。
+    // SVも、自分が送信したお知らせ(sentBy==自分)に限り代理でconfirmedAtを
+    // 書き込める(口頭で確認済みの報告を受けたが本人の操作を忘れている場合等を想定。
+    // sentByが送信元SV自身を指すため、勤怠/タスク完了のようなチーム所属確認
+    // (get()によるsupervisorId照合)は不要)。
     match /announcements/{announcementId} {
       allow read: if request.auth != null &&
         (resource.data.staffId == request.auth.uid || isSv());
@@ -130,8 +153,9 @@ service cloud.firestore {
                     && request.resource.data.createdAt is timestamp;
 
       allow update: if request.auth != null
-                    && resource.data.staffId == request.auth.uid
-                    && isValidConfirmation();
+                    && isValidConfirmation()
+                    && (resource.data.staffId == request.auth.uid
+                        || (isSv() && resource.data.sentBy == request.auth.uid));
 
       allow delete: if false;
     }

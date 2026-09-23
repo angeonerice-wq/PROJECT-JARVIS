@@ -7879,7 +7879,51 @@ class _TaskNotScheduledTodayChip extends StatelessWidget {
   }
 }
 
-class SentTaskDetailScreen extends StatelessWidget {
+/// SVがスタッフの代わりにタスク完了を記録する。口頭で完了報告を受けたが
+/// JARVISへの入力を忘れている場合、スタッフが欠勤中、退職者の後処理等を想定。
+/// 通常のTaskQuickCompleteScreenの完了報告(HistoryStore.add())は「投稿者=自分」
+/// 前提のため、SVが他スタッフの代わりに書き込むこの用途には使えず、reportsへ
+/// 直接書き込む。勤怠の手動変更(submitManualAttendanceStatus)と同じ設計:
+/// SV自身のuidをsupervisorId、対象スタッフのuidをstaffIdとして記録し、
+/// isManualBySv:trueを立てる(この専用フラグ付きのタスク完了カテゴリに限り
+/// SVによる代理書き込みを許可するFirestoreルールとセットで機能する)。
+/// hasTaskCompletionRecord()は証拠(reportsの存在)のみで判定するため、スタッフの
+/// 自己申告とSVの代理記録が両方あっても単に「完了」として扱われるだけで矛盾しない
+/// (勤怠のような「新しい方を優先」の解決ロジックは不要)。
+Future<void> submitManualTaskCompletion({
+  required AssignedTask task,
+  String? staffName,
+}) async {
+  final uid = FirebaseAuth.instance.currentUser?.uid;
+  if (uid == null) return;
+  final now = DateTime.now();
+  final docId = FirebaseFirestore.instance.collection('reports').doc().id;
+  await FirebaseFirestore.instance.collection('reports').doc(docId).set({
+    'staffId': task.staffId,
+    'staffName': staffName,
+    'supervisorId': uid,
+    'category': 'タスク完了',
+    'title': task.title,
+    'timestamp': Timestamp.fromDate(now),
+    'action': SuggestedAction.approveOnly.name,
+    'fields': [
+      {'label': 'タスク', 'value': task.title},
+      {
+        'label': '完了メモ',
+        'value': 'SV(${UserSession.instance.displayName ?? shortStaffId(uid)})による代理記録',
+      },
+    ],
+    'history': <Map<String, dynamic>>[],
+    'sourceTaskId': task.id,
+    'isManualBySv': true,
+    'reviewedBy': uid,
+    'reviewedAt': Timestamp.fromDate(now),
+    'reviewedAction': SuggestedAction.approveOnly.name,
+    'approvedAt': Timestamp.fromDate(now),
+  }).timeout(const Duration(seconds: 10));
+}
+
+class SentTaskDetailScreen extends StatefulWidget {
   final AssignedTask task;
   final List<HistoryEntry> linkedReports;
   final String? staffName;
@@ -7892,7 +7936,61 @@ class SentTaskDetailScreen extends StatelessWidget {
   });
 
   @override
+  State<SentTaskDetailScreen> createState() => _SentTaskDetailScreenState();
+}
+
+class _SentTaskDetailScreenState extends State<SentTaskDetailScreen> {
+  bool _isSubmitting = false;
+
+  /// スタッフから口頭で完了報告を受けたが本人の入力を忘れている場合等、
+  /// SVが代わりに完了記録を残す。submitManualTaskCompletion参照。
+  Future<void> _completeManually() async {
+    if (_isSubmitting) return; // 二重送信防止
+    setState(() => _isSubmitting = true);
+    BeforeUnloadGuard.enable();
+
+    var success = false;
+    try {
+      await submitManualTaskCompletion(
+        task: widget.task,
+        staffName: widget.staffName,
+      );
+      success = true;
+    } catch (e) {
+      debugPrint('[SentTaskDetailScreen] 代理完了の記録に失敗しました: $e');
+    }
+    BeforeUnloadGuard.disable();
+
+    if (!mounted) return;
+
+    if (!success) {
+      setState(() => _isSubmitting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('保存に失敗しました。通信状況をご確認のうえ、もう一度お試しください。'),
+          backgroundColor: Color(0xFF7F1D1D),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('完了として記録しました。'),
+        backgroundColor: Color(0xFF141826),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    if (!mounted) return;
+    Navigator.of(context).pop();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final task = widget.task;
+    final linkedReports = widget.linkedReports;
     // 繰り返しタスクは「今日分の完了報告があるか」で判定する(全期間の実績ではない)。
     // hasTaskCompletionRecordと同じ判定ロジックをlinkedReports(既に絞り込み済み)に適用。
     final completed = hasTaskCompletionRecord(task, linkedReports);
@@ -7941,7 +8039,7 @@ class SentTaskDetailScreen extends StatelessWidget {
                       ],
                     ),
                     const SizedBox(height: 12),
-                    Text('宛先: ${staffName ?? shortStaffId(task.staffId)}',
+                    Text('宛先: ${widget.staffName ?? shortStaffId(task.staffId)}',
                         style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
                     const SizedBox(height: 4),
                     Text('送信: ${task.time}',
@@ -7964,6 +8062,32 @@ class SentTaskDetailScreen extends StatelessWidget {
                   ],
                 ),
               ),
+              if (!completed) ...[
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: _isSubmitting ? null : _completeManually,
+                    icon: _isSubmitting
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.black),
+                          )
+                        : const Icon(Icons.check_circle_outline, size: 18),
+                    label: Text(_isSubmitting ? '記録中...' : 'SVが完了として記録する'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF22C55E),
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
               const SizedBox(height: 16),
               const Text('内容',
                   style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
@@ -8251,7 +8375,20 @@ class _SentAnnouncementsScreenState extends State<SentAnnouncementsScreen> {
   }
 }
 
-class SentAnnouncementDetailScreen extends StatelessWidget {
+/// SVがスタッフの代わりにお知らせを確認済みにする。口頭で確認済みの報告を
+/// 受けたがJARVISへの操作を忘れている場合、スタッフが欠勤中、退職者の後処理等を
+/// 想定。通常はスタッフ本人のみがconfirmedAtを書き込める(isValidConfirmation()、
+/// Firestoreルール)が、SVが自分が送信したお知らせに限り代理で確認済みにできる
+/// 例外を追加する(firestore.rules参照)。
+Future<void> confirmAnnouncementForStaff(String announcementId) async {
+  await FirebaseFirestore.instance
+      .collection('announcements')
+      .doc(announcementId)
+      .update({'confirmedAt': FieldValue.serverTimestamp()}).timeout(
+          const Duration(seconds: 10));
+}
+
+class SentAnnouncementDetailScreen extends StatefulWidget {
   final Announcement announcement;
   final List<HistoryEntry> linkedReports;
   final String? staffName;
@@ -8264,7 +8401,59 @@ class SentAnnouncementDetailScreen extends StatelessWidget {
   });
 
   @override
+  State<SentAnnouncementDetailScreen> createState() =>
+      _SentAnnouncementDetailScreenState();
+}
+
+class _SentAnnouncementDetailScreenState extends State<SentAnnouncementDetailScreen> {
+  bool _isSubmitting = false;
+
+  /// スタッフから口頭で確認済みの報告を受けたが本人の操作を忘れている場合等、
+  /// SVが代わりに確認済みにする。confirmAnnouncementForStaff参照。
+  Future<void> _confirmManually() async {
+    if (_isSubmitting) return; // 二重送信防止
+    setState(() => _isSubmitting = true);
+    BeforeUnloadGuard.enable();
+
+    var success = false;
+    try {
+      await confirmAnnouncementForStaff(widget.announcement.id);
+      success = true;
+    } catch (e) {
+      debugPrint('[SentAnnouncementDetailScreen] 代理確認の記録に失敗しました: $e');
+    }
+    BeforeUnloadGuard.disable();
+
+    if (!mounted) return;
+
+    if (!success) {
+      setState(() => _isSubmitting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('保存に失敗しました。通信状況をご確認のうえ、もう一度お試しください。'),
+          backgroundColor: Color(0xFF7F1D1D),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('確認済みとして記録しました。'),
+        backgroundColor: Color(0xFF141826),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 700));
+    if (!mounted) return;
+    Navigator.of(context).pop();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final announcement = widget.announcement;
+    final linkedReports = widget.linkedReports;
     return Scaffold(
       backgroundColor: const Color(0xFF0A0E1A),
       appBar: AppBar(
@@ -8307,7 +8496,7 @@ class SentAnnouncementDetailScreen extends StatelessWidget {
                       ],
                     ),
                     const SizedBox(height: 12),
-                    Text('宛先: ${staffName ?? shortStaffId(announcement.staffId)}',
+                    Text('宛先: ${widget.staffName ?? shortStaffId(announcement.staffId)}',
                         style: TextStyle(color: Colors.grey[400], fontSize: 12.5)),
                     const SizedBox(height: 4),
                     Text('送信: ${announcement.time}',
@@ -8330,6 +8519,32 @@ class SentAnnouncementDetailScreen extends StatelessWidget {
                   ],
                 ),
               ),
+              if (!announcement.isConfirmed) ...[
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    onPressed: _isSubmitting ? null : _confirmManually,
+                    icon: _isSubmitting
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.black),
+                          )
+                        : const Icon(Icons.check_circle_outline, size: 18),
+                    label: Text(_isSubmitting ? '記録中...' : 'SVが確認済みにする'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF22C55E),
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
               const SizedBox(height: 16),
               const Text('内容',
                   style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
