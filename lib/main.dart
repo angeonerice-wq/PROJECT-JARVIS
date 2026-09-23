@@ -158,6 +158,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final TextEditingController _passwordController = TextEditingController();
   bool _obscurePassword = true;
   bool _isLoading = false;
+  bool _isSendingResetEmail = false;
   String? _errorMessage;
 
   @override
@@ -165,6 +166,60 @@ class _LoginScreenState extends State<LoginScreen> {
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
+  }
+
+  /// メールアドレス欄に入力済みのアドレス宛に、Firebase Authのパスワード
+  /// 再設定メールを送信する。
+  Future<void> _handlePasswordReset() async {
+    if (_isSendingResetEmail) return;
+    final email = _emailController.text.trim();
+    if (email.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('パスワードをリセットするメールアドレスを、上の欄に入力してください。'),
+          backgroundColor: Color(0xFF7F1D1D),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+    setState(() => _isSendingResetEmail = true);
+    try {
+      await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('$email 宛にパスワード再設定用のメールを送信しました。'),
+          backgroundColor: const Color(0xFF141826),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+      final message = switch (e.code) {
+        'invalid-email' => 'メールアドレスの形式が正しくありません。',
+        'user-not-found' => 'このメールアドレスは登録されていません。',
+        _ => '送信に失敗しました。(${e.code})',
+      };
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: const Color(0xFF7F1D1D),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('通信エラーが発生しました。通信状況をご確認のうえ、もう一度お試しください。'),
+          backgroundColor: Color(0xFF7F1D1D),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isSendingResetEmail = false);
+    }
   }
 
   Future<void> _handleLogin() async {
@@ -354,7 +409,7 @@ class _LoginScreenState extends State<LoginScreen> {
               Align(
                 alignment: Alignment.centerRight,
                 child: TextButton(
-                  onPressed: () {},
+                  onPressed: _isSendingResetEmail ? null : _handlePasswordReset,
                   child: Text('パスワードをお忘れですか？',
                       style: TextStyle(color: Colors.grey[500], fontSize: 12.5)),
                 ),
@@ -2137,7 +2192,7 @@ String shortStaffId(String? staffId) {
 }
 
 /// まだ実装が用意できていない項目のタップ時に表示する簡易ダイアログ。
-/// 設定タブ(利用規約・プライバシーポリシー)・SVホーム画面(未実装項目)で共用する。
+/// 設定タブ(利用規約・プライバシーポリシー)で使用する。
 void showComingSoonDialog(BuildContext context, String label) {
   showDialog<void>(
     context: context,
@@ -3212,8 +3267,11 @@ class _AttendanceChatScreenState extends State<AttendanceChatScreen> {
       }
       return SuggestedAction.needsReschedule;
     } else {
-      // 欠勤:理由が不明瞭、または複数日にわたる場合はエスカレーション
-      if (reason.trim().length <= 1) {
+      // 欠勤:理由が不明瞭、または複数日にわたる場合はエスカレーション。
+      // 曖昧さの判定基準はガイダンスループ(isVagueAnswer)と統一する
+      // (以前はlength<=1という別基準で、ガイダンスで弾かれるはずの曖昧な
+      // 回答が最終判定をすり抜けてしまっていた)。
+      if (isVagueAnswer(reason)) {
         return SuggestedAction.escalate;
       }
       if (detail.contains('明日') || RegExp(r'[2-9]\s*日').hasMatch(detail)) {
@@ -6911,6 +6969,10 @@ class AssignedTaskDetailScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 同じタスクについて既に業務相談を送っていれば、重複して何件も作れて
+    // しまわないよう「問い合わせ」ボタンを無効化する。
+    final hasInquiry = HistoryStore.instance.entries.any(
+        (e) => e.sourceTaskId == task.id && e.category == '業務相談');
     return Scaffold(
       backgroundColor: const Color(0xFF0A0E1A),
       appBar: AppBar(
@@ -6987,18 +7049,20 @@ class AssignedTaskDetailScreen extends StatelessWidget {
                 children: [
                   Expanded(
                     child: OutlinedButton.icon(
-                      onPressed: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => ConsultationChatScreen(
-                              sourceTaskId: task.id,
-                              sourceTaskTitle: task.title,
-                            ),
-                          ),
-                        );
-                      },
+                      onPressed: hasInquiry
+                          ? null
+                          : () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => ConsultationChatScreen(
+                                    sourceTaskId: task.id,
+                                    sourceTaskTitle: task.title,
+                                  ),
+                                ),
+                              );
+                            },
                       icon: const Icon(Icons.chat_bubble_outline, size: 18),
-                      label: const Text('問い合わせ'),
+                      label: Text(hasInquiry ? '問い合わせ済み' : '問い合わせ'),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: Colors.white,
                         side: const BorderSide(color: Colors.white24),
@@ -9428,6 +9492,11 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
     final s = widget.summary;
     final effectiveAction = _decision ?? s.action;
     final isSv = UserSession.instance.role == UserRole.sv;
+    // 同じ報告について既に業務相談を送っていれば、重複して何件も作れて
+    // しまわないよう「対応する」ボタンを無効化する。
+    final hasInquiry = s.id != null &&
+        HistoryStore.instance.entries
+            .any((e) => e.sourceReportId == s.id && e.category == '業務相談');
 
     return Scaffold(
       backgroundColor: const Color(0xFF0A0E1A),
@@ -9598,18 +9667,20 @@ class _SvSummaryScreenState extends State<SvSummaryScreen> {
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton.icon(
-                    onPressed: () {
-                      Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => ConsultationChatScreen(
-                            sourceReportId: s.id,
-                            sourceReportTitle: s.category,
-                          ),
-                        ),
-                      );
-                    },
+                    onPressed: hasInquiry
+                        ? null
+                        : () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => ConsultationChatScreen(
+                                  sourceReportId: s.id,
+                                  sourceReportTitle: s.category,
+                                ),
+                              ),
+                            );
+                          },
                     icon: const Icon(Icons.chat_bubble_outline, size: 18),
-                    label: const Text('対応する'),
+                    label: Text(hasInquiry ? '対応済み(送信済み)' : '対応する'),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.cyanAccent,
                       foregroundColor: Colors.black,
@@ -9823,7 +9894,3 @@ class _SvActionButton extends StatelessWidget {
     );
   }
 }
-
-// ============================================================
-// ログイン画面(モックアップ:認証ロジックは未実装)
-// ============================================================
